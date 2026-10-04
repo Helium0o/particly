@@ -427,6 +427,69 @@ class ParticleView {
     gl.drawArrays(gl.LINES, 0, out.length / 7);
   }
 
+  /** 0..1 brightness and colour of the neon plate at time t (same maths as the Roblox script). */
+  static neonState(u, t) {
+    const s = t * u.animSpeed;
+    let k = 1, col = u.color;
+    switch (u.anim) {
+      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
+      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
+      case 'flicker': k = ((Math.floor(s * 12) * 2654435761) >>> 0) % 100 < 9 ? 0.3 : 1; break;
+      case 'strobe': k = (s * 4) % 1 < 0.5 ? 1 : 0.1; break;
+      case 'rainbow': col = U.hsvToRgb([(s * 0.25) % 1, 0.8, 1]); break;
+    }
+    return { k, col };
+  }
+
+  _quad(B, o, c, ax, az, uv, rgb, a) {
+    // flat quad on the XZ plane centred at c with half extents ax (x) and az (z)
+    const y = c[1];
+    const V = (x, z, u, v) => { B[o++] = x; B[o++] = y; B[o++] = z; B[o++] = u; B[o++] = v; B[o++] = rgb[0]; B[o++] = rgb[1]; B[o++] = rgb[2]; B[o++] = a; };
+    V(c[0] - ax, c[2] - az, 0, 0); V(c[0] + ax, c[2] - az, 1, 0); V(c[0] + ax, c[2] + az, 1, 1);
+    V(c[0] - ax, c[2] - az, 0, 0); V(c[0] + ax, c[2] + az, 1, 1); V(c[0] - ax, c[2] + az, 0, 1);
+    return o;
+  }
+
+  /** Car neon: glowing plate on the part's top face + light spill on the ground. */
+  _drawNeon() {
+    const E = this.effect, u = E && E.underglow;
+    if (!u || !u.enabled) return;
+    const gl = this.gl;
+    const { k, col } = ParticleView.neonState(u, this.sim.time);
+    const p = this.sim.emitterPos, hx = E.partSize[0] / 2, hz = E.partSize[2] / 2;
+    const B = new Float32Array(54);
+    gl.uniform1f(this.uEmit, 1);
+    if (u.light && u.lightBrightness > 0) {
+      const spillA = U.clamp(0.25 * k * u.lightBrightness / 3, 0, 0.8);
+      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, col, spillA);
+      gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text, Neon.spill(u.design, u.text)));
+      gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+    const rgb = col.map((v) => v * Math.max(0.2, u.brightness / 2));
+    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * k, 0, 1));
+    gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
+    gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  _canvasTexture(key, src) {
+    const gl = this.gl;
+    let rec = this.texCache[key];
+    if (rec && rec.src === src) return rec.tex;
+    if (!rec) { rec = { tex: gl.createTexture() }; this.texCache[key] = rec; }
+    rec.src = src;
+    gl.bindTexture(gl.TEXTURE_2D, rec.tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return rec.tex;
+  }
+
   render() {
     const gl = this.gl;
     this._resize();
@@ -449,6 +512,7 @@ class ParticleView {
     gl.bindVertexArray(this.pVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pVbo);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    this._drawNeon();
 
     const layers = this.effect.layers.map((L, i) => ({ L, i })).filter(({ L }) => !L.hidden)
       .sort((a, b) => (a.L.ZOffset - b.L.ZOffset) || (a.i - b.i));

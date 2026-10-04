@@ -19,7 +19,7 @@ const BEHAVIOURS = {
 const BOOST_KEYS = ['LeftShift', 'RightShift', 'LeftControl', 'Q', 'E', 'F', 'R', 'B', 'N', 'X', 'Z', 'Space'];
 const ATTACH_POINTS = ['HumanoidRootPart', 'Head', 'UpperTorso', 'LowerTorso'];
 
-const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
+const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
 /** Gamepad button paired with each keyboard key (so different effects don't share one button). */
 const GAMEPAD_FOR_KEY = { LeftShift: 'ButtonR1', RightShift: 'ButtonR1', Space: 'ButtonR1', LeftControl: 'ButtonL1', Q: 'ButtonL1', E: 'ButtonY', R: 'ButtonY', F: 'ButtonX', X: 'ButtonX', B: 'ButtonB', N: 'DPadUp', Z: 'DPadDown' };
 
@@ -35,6 +35,7 @@ const Behaviour = (() => {
       mode: BEHAVIOURS[t.mode] ? t.mode : d.mode,
       key: BOOST_KEYS.includes(t.key) ? t.key : d.key,
       buttonText: String(t.buttonText || d.buttonText).slice(0, 12),
+      toggle: !!t.toggle,
       maxSeconds: num(t.maxSeconds, d.maxSeconds, 0, 600),
       duration: num(t.duration, d.duration, 0.05, 600),
       cooldown: num(t.cooldown, d.cooldown, 0, 600),
@@ -44,7 +45,7 @@ const Behaviour = (() => {
   }
 
   /** Machine-readable header so Particly can re-import the behaviour from exported scripts. */
-  const marker = (effect) => `--@particly ${JSON.stringify({ ...effect.trigger, burstLoop: effect.burstLoop, name: effect.name, partSize: effect.partSize })}`;
+  const marker = (effect) => `--@particly ${JSON.stringify({ ...effect.trigger, burstLoop: effect.burstLoop, name: effect.name, partSize: effect.partSize, ...(effect.underglow && effect.underglow.enabled ? { underglow: effect.underglow } : {}) })}`;
   const controlSource = (effect) => `${marker(effect)}\n${CONTROL_SOURCE}`;
 
   const hasBurst = (effect) => effect.layers.some((l) => !l.hidden && l.mode === 'burst');
@@ -89,6 +90,18 @@ local function new(target)
 		return list
 	end
 
+	-- Car neon (SurfaceGui / SurfaceLight tagged ParticlyNeon) follows start / stop
+	local function setNeon(on)
+		if typeof(target) ~= "Instance" then
+			return
+		end
+		for _, item in ipairs(target:GetDescendants()) do
+			if item:GetAttribute("ParticlyNeon") then
+				item.Enabled = on
+			end
+		end
+	end
+
 	function self.burst()
 		for _, emitter in ipairs(emitters()) do
 			local count = emitter:GetAttribute("EmitCount")
@@ -116,6 +129,7 @@ local function new(target)
 				emitter.Enabled = true
 			end
 		end
+		setNeon(true)
 		self.burst()
 	end
 
@@ -127,6 +141,7 @@ local function new(target)
 				emitter.Enabled = false
 			end
 		end
+		setNeon(false)
 	end
 
 	function self.play(duration)
@@ -347,6 +362,7 @@ local BOOST_KEYS = {
 	[Enum.KeyCode.${GAMEPAD_FOR_KEY[t.key]}] = true,
 }
 local BUTTON_TEXT = ${lStr(t.buttonText)}
+local TOGGLE = ${t.toggle ? 'true' : 'false'} -- true: press once for on, again for off
 -- One flag + one touch button per key: twin exhausts on the same key stay in sync,
 -- while e.g. nitro (Shift) and drift smoke (Q) on the same car stay independent.
 local STATE = "ParticlyBoost_${t.key}"
@@ -380,22 +396,35 @@ player:GetAttributeChangedSignal(STATE):Connect(function()
 	end
 end)
 
+local function press()
+	if TOGGLE then
+		setBoost(player:GetAttribute(STATE) ~= true)
+	else
+		setBoost(true)
+	end
+end
+local function release()
+	if not TOGGLE then
+		setBoost(false)
+	end
+end
+
 UserInputService.InputBegan:Connect(function(input, processed)
 	if not processed and BOOST_KEYS[input.KeyCode] and isDriving() then
-		setBoost(true)
+		press()
 	end
 end)
 UserInputService.InputEnded:Connect(function(input)
 	if BOOST_KEYS[input.KeyCode] then
-		setBoost(false)
+		release()
 	end
 end)
 
 local function onBoostButton(_, state)
 	if state == Enum.UserInputState.Begin then
-		setBoost(true)
+		press()
 	elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
-		setBoost(false)
+		release()
 	end
 	return Enum.ContextActionResult.Sink
 end
@@ -490,7 +519,8 @@ end
         'Drag the .rbxmx into your car model in the Explorer (the model that contains the VehicleSeat).',
         'Move the effect Part to the exhaust pipe and rotate it so its Back face (blue arrow when using Move, +Z) points out of the pipe. It welds itself to the car when the game starts.',
         'Twin exhausts: duplicate the Part (Ctrl+D) and move the copy to the other pipe — both boost together.',
-        `Play: sit in the driver seat and hold ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button).`,
+        `Play: sit in the driver seat and ${t.toggle ? 'press' : 'hold'} ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button)${t.toggle ? ' to switch it on/off' : ''}.`,
+        ...(effect.underglow && effect.underglow.enabled ? ['Car neon: put the Part flat under the car (X = car width, Z = car length), just above the road. The glow is on its Top face and a light shines down onto the road.'] : []),
       ];
       case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
       case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];

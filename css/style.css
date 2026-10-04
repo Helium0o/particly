@@ -178,6 +178,11 @@ select.vb { font-size: 13px; background: transparent; border-color: var(--line2)
 .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
 .seg button { background: none; border: none; padding: 4px 10px; cursor: pointer; color: var(--dim); }
 .seg button.on { background: var(--accent); color: #fff; }
+.neon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.neon-tile { position: relative; aspect-ratio: 1 / 2; border: 1px solid var(--line); border-radius: 5px; background: #07080c center/contain no-repeat; cursor: pointer; padding: 0; }
+.neon-tile:hover { border-color: var(--accent); }
+.neon-tile.sel { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2); }
+.neon-tile .dot { position: absolute; right: 2px; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); }
 .behaviour { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px; }
 .layer-head { display: flex; flex-direction: column; gap: 8px; }
 .warn { background: #ffb54718; border: 1px solid #ffb54755; color: #ffd28a; border-radius: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.45; }

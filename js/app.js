@@ -119,9 +119,97 @@ function refreshAll() {
   $('effectName').value = App.effect.name;
   App.view && App.view.setEffect(App.effect);
   renderEffectCard();
+  renderNeonCard();
   renderLayers();
   renderProps();
   renderTextureTab();
+}
+
+/* ============================== right panel: car neon ============================== */
+
+const neonThumbCache = {};
+/** Small tinted preview of a neon design. */
+function neonThumb(design, text, color, w = 44) {
+  const key = [design, text, color.join(','), w].join('|');
+  if (neonThumbCache[key]) return neonThumbCache[key];
+  const c = document.createElement('canvas');
+  c.width = w; c.height = w * 2;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(Neon.canvas(design, text), 0, 0, c.width, c.height);
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = U.rgbToHex(color);
+  ctx.fillRect(0, 0, c.width, c.height);
+  return (neonThumbCache[key] = c.toDataURL());
+}
+
+const NEON_SWATCHES = ['#3a8dff', '#00e5ff', '#39ff6a', '#ff2a6a', '#ff3cf0', '#a040ff', '#ffd23a', '#ff7a1a', '#ff1a1a', '#ffffff'];
+const PLATE_SIZES = [['Car', [6, 0.2, 12]], ['SUV / truck', [7, 0.2, 15]], ['Kart', [4, 0.2, 6]], ['Bike', [2, 0.2, 6]]];
+
+function renderNeonCard() {
+  const E = App.effect, u = E.underglow;
+  const card = $('neonCard');
+  const set = (k, v, redraw = true) => { u[k] = v; commit(); if (redraw) renderNeonCard(); };
+  const field = (label, title, input) => el('div', { class: 'prop' }, el('label', { title }, label), input);
+  const on = el('input', { type: 'checkbox', checked: u.enabled, title: 'Add a glowing neon plate under a car' });
+  on.addEventListener('change', () => {
+    u.enabled = on.checked;
+    if (on.checked && E.partSize[1] > 1) E.partSize = [6, 0.2, 12]; // a flat car-sized plate
+    commit(); refreshAll();
+  });
+  const head = el('div', { class: 'card-head', style: { marginBottom: u.enabled ? '8px' : 0 } },
+    el('h3', null, 'Car Neon ', el('small', null, '(underglow)')), el('label', { class: 'vt', style: { color: 'var(--text)' } }, on, 'On'));
+  if (!u.enabled) {
+    card.replaceChildren(head, el('div', { class: 'hint', style: { margin: '6px 0 0' } }, 'NFS-style glowing designs under a car — LED strips, hearts, flames, skulls, custom text… exported as a glowing SurfaceGui + road light.'));
+    return;
+  }
+  const grid = el('div', { class: 'neon-grid' }, Neon.DESIGNS.map((d) => el('button', {
+    class: 'neon-tile' + (u.design === d.key ? ' sel' : ''), title: d.name + (Neon.isFrameDesign(d.key) ? ' — no upload needed' : ' — image, upload once'),
+    style: { backgroundImage: `url(${neonThumb(d.key, u.text, u.color)})` }, onclick: () => set('design', d.key),
+  }, Neon.isFrameDesign(d.key) ? el('span', { class: 'dot' }) : null)));
+  const color = el('input', { type: 'color', value: U.rgbToHex(u.color) });
+  color.addEventListener('input', () => { u.color = U.hexToRgb(color.value); });
+  color.addEventListener('change', () => set('color', U.hexToRgb(color.value)));
+  const swatches = el('div', { class: 'seq-tools' }, NEON_SWATCHES.map((h) => el('button', { style: { background: h, width: '18px', height: '16px', padding: 0 }, title: h, onclick: () => set('color', U.hexToRgb(h)) })));
+  const anim = el('select', null, Object.entries(NEON_ANIMS).map(([k, v]) => el('option', { value: k }, v)));
+  anim.value = u.anim;
+  anim.addEventListener('change', () => set('anim', anim.value));
+  const num = (k, min, max, step) => Editors.numberField({ get: () => u[k], set: (v) => { u[k] = U.clamp(v, min, max); }, commit, min, max, step });
+  const light = el('input', { type: 'checkbox', checked: u.light });
+  light.addEventListener('change', () => set('light', light.checked));
+  const rows = [
+    grid,
+    el('div', { class: 'hint', style: { margin: 0 } }, el('b', null, Neon.BY_KEY[u.design].name), Neon.isFrameDesign(u.design) ? ' — built from glowing GUI frames, no upload needed.' : ' — exported as an image (upload once).'),
+  ];
+  if (u.design === 'text') {
+    const t = el('input', { type: 'text', value: u.text, maxlength: 14 });
+    t.addEventListener('change', () => set('text', t.value));
+    rows.push(field('Text', 'Shown along both sides of the car', t));
+  }
+  rows.push(
+    field('Colour', 'Neon colour (the design is tinted)', el('div', { class: 'row gap' }, color, swatches)),
+    field('Glow', 'SurfaceGui Brightness — above 1 blooms in-game', num('brightness', 0, 6, 0.1)),
+    field('Opacity', '', num('opacity', 0.05, 1, 0.01)),
+    field('Animation', 'Animated on each player\'s screen by a small client script', el('div', { class: 'row gap' }, anim)),
+  );
+  if (u.anim !== 'none') rows.push(field('Speed', '', num('animSpeed', 0.1, 5, 0.05)));
+  rows.push(field('Road light', 'SurfaceLight shining down so the road takes the neon colour', el('div', { class: 'row gap' }, light, u.light ? num('lightBrightness', 0, 15, 0.1) : null)));
+  if (u.light) rows.push(field('Light range', 'Studs', num('lightRange', 2, 30, 0.5)));
+  rows.push(field('Plate size', 'The neon covers the effect Part: X = car width, Z = car length', el('div', { class: 'row gap wrap' },
+    PLATE_SIZES.map(([n, sz]) => el('button', { class: 'btn small', title: sz.join(' × '), onclick: () => { E.partSize = [...sz]; commit(); refreshAll(); } }, n)))));
+  if (!Neon.isFrameDesign(u.design)) {
+    const id = el('input', { type: 'text', value: u.imageId, placeholder: 'rbxassetid://… after uploading', spellcheck: false });
+    id.addEventListener('change', () => set('imageId', parseAssetInput(id.value)));
+    rows.push(el('div', { class: u.imageId ? 'ok-note' : 'warn' },
+      u.imageId ? 'Using your uploaded image.' : 'Image design: download the PNG, upload it to Roblox (Asset Manager › Import), then paste its ID. Until then it exports as glowing bars.',
+      el('div', { class: 'row gap', style: { marginTop: '6px' } }, id,
+        el('button', { class: 'btn small', onclick: () => downloadNeonPng(u) }, '⬇ PNG'))));
+  }
+  card.replaceChildren(head, el('div', { class: 'sbody', style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: 0 } }, rows));
+}
+
+function downloadNeonPng(u) {
+  const c = Neon.canvas(u.design, u.text, 2);
+  c.toBlob((b) => U.download(`particly_neon_${u.design}${u.design === 'text' ? '_' + U.safeName(u.text) : ''}.png`, b));
 }
 
 /* ============================== texture thumbnails ============================== */
@@ -177,10 +265,13 @@ function behaviourEditor(E) {
   const extra = [];
   if (T.mode === 'vehicle') {
     extra.push(field('Boost key', 'Keyboard key the driver holds. A matching gamepad button and an on-screen mobile button are added automatically. Effects on the same key boost together (twin exhausts).', select('key', BOOST_KEYS)));
+    const tg = el('input', { type: 'checkbox', checked: T.toggle });
+    tg.addEventListener('change', () => set('toggle', tg.checked));
+    extra.push(field('Toggle', 'On: press once to switch on, again to switch off (good for neon / lights). Off: works while the key is held (nitro).', el('label', { class: 'vt', style: { color: 'var(--text)' } }, tg, 'press on / off')));
     const bt = el('input', { type: 'text', value: T.buttonText, maxlength: 12 });
     bt.addEventListener('change', () => set('buttonText', bt.value.trim() || 'BOOST'));
     extra.push(field('Mobile button', 'Label of the on-screen button for touch devices', bt));
-    extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
+    if (!T.toggle) extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
     extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Tip: tick "Drive" in the preview bar to see it streaming behind a moving car. Exhausts emit from the part\'s Back face (+Z).'));
   }
   if (T.mode === 'touch' || T.mode === 'prompt') {
@@ -824,6 +915,8 @@ function openHelp() {
       el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons).'),
       el('li', null, el('b', null, 'Attach to every character'), ': auras, trails, footstep dust.'),
       el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
+    el('h4', null, 'Car neon (underglow)'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload.'),
     el('h4', null, 'Textures'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),

@@ -145,7 +145,7 @@ const Import = (() => {
       // A Particly "always on" effect re-imports with its burst layers' Enabled restored by mode
       effects.push(Model.normalizeEffect({
         name: meta.name || (nameOf(parent) || (list.length === 1 && nameOf(list[0])) || 'Imported Effect').replace(/^Particly_/, ''),
-        category: 'Imported', partSize: partSize || meta.partSize, layers, trigger: meta,
+        category: 'Imported', partSize: partSize || meta.partSize, layers, trigger: meta, underglow: meta.underglow,
         burstLoop: meta.burstLoop || (loop ? +loop[1] : undefined),
       }));
     }
@@ -443,6 +443,7 @@ const Import = (() => {
         tableEmitters.push(layerFromMap(m.Props.map, extra));
         return;
       }
+      if ('Frames' in m || 'LightBrightness' in m) return; // Particly's car-neon settings table, not an emitter
       const propHits = Object.keys(m).filter((k) => PROP_BY_KEY[k]).length;
       if (propHits >= 2) { tableEmitters.push(layerFromMap(m)); return; }
       for (const v of [...Object.values(m), ...tbl.arr]) walk(v, depth + 1);
@@ -509,7 +510,7 @@ const Import = (() => {
     if (!layers.length) throw new Error('No ParticleEmitter properties found in this code.');
     const marker = markerOf(src) || {};
     resolveDisabled(layers, marker);
-    return [Model.normalizeEffect({ name: meta.name || marker.name || 'Imported Script', category: 'Imported', partSize: meta.partSize || marker.partSize, burstLoop: marker.burstLoop || meta.burstLoop, trigger: marker, layers })];
+    return [Model.normalizeEffect({ name: meta.name || marker.name || 'Imported Script', category: 'Imported', partSize: meta.partSize || marker.partSize, burstLoop: marker.burstLoop || meta.burstLoop, trigger: marker, underglow: marker.underglow, layers })];
   }
 
   /* ---------------------------- share links ---------------------------- */

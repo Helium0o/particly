@@ -3,7 +3,7 @@
 Design Roblox **ParticleEmitter** effects with a live 3D preview, then drop them straight into Roblox Studio.
 
 - **No install needed.** It's a single HTML page, and there's also a desktop app for Windows, Mac and Linux (see below). Open `dist/Particly.html` (or `index.html`) in Chrome, Edge, Firefox or Safari. Works offline.
-- **173 ready-made effects** in 12 categories: vehicles (nitro, exhaust, drift smoke, backfire, afterburners…), fire, smoke & gas, magic, abilities, combat & impact, weapons, weather & nature, environment, sci-fi & energy, fun & rewards, and seasonal.
+- **199 ready-made effects** in 13 categories: vehicles (nitro, exhaust, drift smoke, backfire, afterburners…), car neon (NFS-style underglow), fire, smoke & gas, magic, abilities, combat & impact, weapons, weather & nature, environment, sci-fi & energy, fun & rewards, and seasonal.
 - **Effects that work in your game straight away.** Each export includes the scripts for what the effect should do: hold a key while driving (nitro), play when touched, play from a ProximityPrompt, attach to every player's character, or be controlled from your own scripts.
 - **Build your own:** layer as many emitters as you want, and edit every ParticleEmitter property with curve and gradient editors. There's also a random generator, a "vary" button, and scale, hue and timing tools.
 - **One-click export to Roblox:** a `.rbxmx` model you drag into Studio, a Command Bar script, or a ModuleScript to use from game code.
@@ -76,6 +76,14 @@ Every effect has an **In Roblox** setting in the Effect panel. The `.rbxmx` / Co
 | **Attach to every character** | Put the export in StarterPlayer › StarterCharacterScripts and every character gets the effect. | Auras, trails, footstep dust |
 | **Controlled by my scripts** | Starts off. From a server Script, call `require(part.ParticlyControl).play(2)`, `.start()`, `.stop()` or `.burst()`. | Explosions, abilities, damage smoke |
 
+### Car neon / underglow (NFS-style)
+
+Tick **Car Neon → On** in the Effect panel, or pick a preset from **Car Neon**. You can choose from 23 designs: LED strips, tubes, a ring, hearts, flames, skulls, chevrons, stars, flowers, hex grid, lightning, diamonds, checkered, bats, snowflakes, crosses, winged heart, spirals, bubbles, paws, and custom text. You can also pick any colour, a glow strength, an animation (pulse, breathe, flicker, strobe or rainbow) and a road light.
+
+- **How it works in Roblox:** the effect Part becomes a flat plate under the car. Its **X** size is the car's width and its **Z** size is its length. A `SurfaceGui` with `LightInfluence = 0` on the plate's top face makes the design glow, and a `SurfaceLight` shines down so the road takes the neon colour. Animations run in a small client script.
+- **Uploads:** the bars, LED, ring and tube designs are built from GUI frames, so they need **no upload**. The icon designs export as a PNG: upload it once and paste the image ID. Until you do, they export as glowing bars.
+- **Switching it on and off:** to let the driver toggle the neon with a key, set *In Roblox* to **Vehicle boost** and tick **Toggle**, as in the "Neon Toggle (press N)" preset.
+
 ### Car nitro, step by step
 
 1. Pick a preset from **Vehicles**, for example *Nitro Boost (Blue)*. Its behaviour is already set to **Vehicle boost**, and the preview switches to **Drive** mode.
@@ -133,6 +141,7 @@ js/model.js         ParticleEmitter schema, defaults, sequence math
 js/textures.js      built-in + procedural textures
 js/presets*.js      the 173 presets (presets-vehicles.js = cars)
 js/behaviours.js    "In Roblox" behaviours: generates ParticlyControl + trigger scripts
+js/neon.js          car neon designs + SurfaceGui/SurfaceLight export helpers
 js/renderer.js      particle simulation + WebGL2 preview
 js/exporters.js     .rbxmx / Command Bar / ModuleScript / JSON / share links
 js/importers.js     JSON / .rbxmx / Luau parser / URLs

@@ -187,6 +187,11 @@ select.vb { font-size: 13px; background: transparent; border-color: var(--line2)
 .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
 .seg button { background: none; border: none; padding: 4px 10px; cursor: pointer; color: var(--dim); }
 .seg button.on { background: var(--accent); color: #fff; }
+.neon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.neon-tile { position: relative; aspect-ratio: 1 / 2; border: 1px solid var(--line); border-radius: 5px; background: #07080c center/contain no-repeat; cursor: pointer; padding: 0; }
+.neon-tile:hover { border-color: var(--accent); }
+.neon-tile.sel { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2); }
+.neon-tile .dot { position: absolute; right: 2px; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); }
 .behaviour { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px; }
 .layer-head { display: flex; flex-direction: column; gap: 8px; }
 .warn { background: #ffb54718; border: 1px solid #ffb54755; color: #ffd28a; border-radius: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.45; }
@@ -351,6 +356,7 @@ select.vb { font-size: 13px; background: transparent; border-color: var(--line2)
 
   <aside id="right">
     <div class="panel-card" id="effectCard"></div>
+    <div class="panel-card" id="neonCard"></div>
     <div class="panel-card">
       <div class="card-head">
         <h3>Layers <small>(each = 1 ParticleEmitter)</small></h3>
@@ -732,6 +738,7 @@ const Model = {
     E.partSize = Model.vec(src.partSize || src.part, 3, EFFECT_DEFAULTS.partSize).map((v) => U.clamp(v, 0.05, 2048));
     E.burstLoop = isFinite(+src.burstLoop) && +src.burstLoop > 0 ? +src.burstLoop : EFFECT_DEFAULTS.burstLoop;
     E.trigger = Behaviour.normalize(src.trigger); // what the effect does by itself in Roblox
+    E.underglow = Neon.normalize(src.underglow); // optional car neon plate (SurfaceGui + light)
     E.textures = {};
     if (src.textures && typeof src.textures === 'object') {
       for (const [k, t] of Object.entries(src.textures)) {
@@ -770,7 +777,7 @@ const BEHAVIOURS = {
 const BOOST_KEYS = ['LeftShift', 'RightShift', 'LeftControl', 'Q', 'E', 'F', 'R', 'B', 'N', 'X', 'Z', 'Space'];
 const ATTACH_POINTS = ['HumanoidRootPart', 'Head', 'UpperTorso', 'LowerTorso'];
 
-const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
+const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
 /** Gamepad button paired with each keyboard key (so different effects don't share one button). */
 const GAMEPAD_FOR_KEY = { LeftShift: 'ButtonR1', RightShift: 'ButtonR1', Space: 'ButtonR1', LeftControl: 'ButtonL1', Q: 'ButtonL1', E: 'ButtonY', R: 'ButtonY', F: 'ButtonX', X: 'ButtonX', B: 'ButtonB', N: 'DPadUp', Z: 'DPadDown' };
 
@@ -786,6 +793,7 @@ const Behaviour = (() => {
       mode: BEHAVIOURS[t.mode] ? t.mode : d.mode,
       key: BOOST_KEYS.includes(t.key) ? t.key : d.key,
       buttonText: String(t.buttonText || d.buttonText).slice(0, 12),
+      toggle: !!t.toggle,
       maxSeconds: num(t.maxSeconds, d.maxSeconds, 0, 600),
       duration: num(t.duration, d.duration, 0.05, 600),
       cooldown: num(t.cooldown, d.cooldown, 0, 600),
@@ -795,7 +803,7 @@ const Behaviour = (() => {
   }
 
   /** Machine-readable header so Particly can re-import the behaviour from exported scripts. */
-  const marker = (effect) => `--@particly ${JSON.stringify({ ...effect.trigger, burstLoop: effect.burstLoop, name: effect.name, partSize: effect.partSize })}`;
+  const marker = (effect) => `--@particly ${JSON.stringify({ ...effect.trigger, burstLoop: effect.burstLoop, name: effect.name, partSize: effect.partSize, ...(effect.underglow && effect.underglow.enabled ? { underglow: effect.underglow } : {}) })}`;
   const controlSource = (effect) => `${marker(effect)}\n${CONTROL_SOURCE}`;
 
   const hasBurst = (effect) => effect.layers.some((l) => !l.hidden && l.mode === 'burst');
@@ -840,6 +848,18 @@ local function new(target)
 		return list
 	end
 
+	-- Car neon (SurfaceGui / SurfaceLight tagged ParticlyNeon) follows start / stop
+	local function setNeon(on)
+		if typeof(target) ~= "Instance" then
+			return
+		end
+		for _, item in ipairs(target:GetDescendants()) do
+			if item:GetAttribute("ParticlyNeon") then
+				item.Enabled = on
+			end
+		end
+	end
+
 	function self.burst()
 		for _, emitter in ipairs(emitters()) do
 			local count = emitter:GetAttribute("EmitCount")
@@ -867,6 +887,7 @@ local function new(target)
 				emitter.Enabled = true
 			end
 		end
+		setNeon(true)
 		self.burst()
 	end
 
@@ -878,6 +899,7 @@ local function new(target)
 				emitter.Enabled = false
 			end
 		end
+		setNeon(false)
 	end
 
 	function self.play(duration)
@@ -1098,6 +1120,7 @@ local BOOST_KEYS = {
 	[Enum.KeyCode.${GAMEPAD_FOR_KEY[t.key]}] = true,
 }
 local BUTTON_TEXT = ${lStr(t.buttonText)}
+local TOGGLE = ${t.toggle ? 'true' : 'false'} -- true: press once for on, again for off
 -- One flag + one touch button per key: twin exhausts on the same key stay in sync,
 -- while e.g. nitro (Shift) and drift smoke (Q) on the same car stay independent.
 local STATE = "ParticlyBoost_${t.key}"
@@ -1131,22 +1154,35 @@ player:GetAttributeChangedSignal(STATE):Connect(function()
 	end
 end)
 
+local function press()
+	if TOGGLE then
+		setBoost(player:GetAttribute(STATE) ~= true)
+	else
+		setBoost(true)
+	end
+end
+local function release()
+	if not TOGGLE then
+		setBoost(false)
+	end
+end
+
 UserInputService.InputBegan:Connect(function(input, processed)
 	if not processed and BOOST_KEYS[input.KeyCode] and isDriving() then
-		setBoost(true)
+		press()
 	end
 end)
 UserInputService.InputEnded:Connect(function(input)
 	if BOOST_KEYS[input.KeyCode] then
-		setBoost(false)
+		release()
 	end
 end)
 
 local function onBoostButton(_, state)
 	if state == Enum.UserInputState.Begin then
-		setBoost(true)
+		press()
 	elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
-		setBoost(false)
+		release()
 	end
 	return Enum.ContextActionResult.Sink
 end
@@ -1241,7 +1277,8 @@ end
         'Drag the .rbxmx into your car model in the Explorer (the model that contains the VehicleSeat).',
         'Move the effect Part to the exhaust pipe and rotate it so its Back face (blue arrow when using Move, +Z) points out of the pipe. It welds itself to the car when the game starts.',
         'Twin exhausts: duplicate the Part (Ctrl+D) and move the copy to the other pipe — both boost together.',
-        `Play: sit in the driver seat and hold ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button).`,
+        `Play: sit in the driver seat and ${t.toggle ? 'press' : 'hold'} ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button)${t.toggle ? ' to switch it on/off' : ''}.`,
+        ...(effect.underglow && effect.underglow.enabled ? ['Car neon: put the Part flat under the car (X = car width, Z = car length), just above the road. The glow is on its Top face and a light shines down onto the road.'] : []),
       ];
       case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
       case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];
@@ -1708,6 +1745,390 @@ const TextureStore = {
     return c;
   },
 };
+</script>
+<script>
+'use strict';
+/*
+ * Car neon / underglow: a glowing design drawn on a flat plate under a car.
+ *
+ * In Roblox this exports as a SurfaceGui (LightInfluence 0 = it glows) on the effect Part's
+ * Top face, plus a SurfaceLight that throws the neon colour onto the road. The plate *is* the
+ * effect Part: its X size is the car's width and its Z size the car's length.
+ *
+ * Designs are white masks (tinted by the chosen colour), portrait: x = car width, y = car length.
+ * "Frame" designs (bars, LEDs, ring…) are rebuilt from GUI Frames in Roblox, so they need no
+ * image upload. Icon designs export as a PNG you upload once and paste the asset id for.
+ */
+
+const NEON_W = 256, NEON_H = 512;
+
+const NEON_ANIMS = { none: 'Steady', pulse: 'Pulse', breathe: 'Breathe', flicker: 'Flicker', strobe: 'Strobe', rainbow: 'Rainbow cycle' };
+
+const NEON_DEFAULTS = {
+  enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], brightness: 2, opacity: 1,
+  anim: 'none', animSpeed: 1, light: true, lightBrightness: 3, lightRange: 10, imageId: '',
+};
+
+const Neon = (() => {
+  /* ---------------- rect specs (shared by preview canvas and Roblox GUI Frames) ---------------- */
+  // rect: { x, y, w, h } in 0..1 of the plate, pill: rounded ends, stroke: outline px (on 256x512), a: alpha
+  const pill = (x, y, w, h, a = 1) => ({ x, y, w, h, pill: true, a });
+  function sideBars() { return [pill(0.05, 0.17, 0.07, 0.66), pill(0.88, 0.17, 0.07, 0.66)]; }
+  function endBars() { return [pill(0.3, 0.035, 0.4, 0.035), pill(0.3, 0.93, 0.4, 0.035)]; }
+  function dots(n, x, y0, y1, w = 0.05, h = 0.022) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(pill(x, y0 + (y1 - y0) * (i / (n - 1)), w, h));
+    return out;
+  }
+  function ledSides() { return [...dots(12, 0.06, 0.18, 0.8), ...dots(12, 0.89, 0.18, 0.8)]; }
+  function ledEnds() {
+    const out = [];
+    for (let i = 0; i < 6; i++) { out.push(pill(0.27 + i * 0.08, 0.04, 0.05, 0.022)); out.push(pill(0.27 + i * 0.08, 0.935, 0.05, 0.022)); }
+    return out;
+  }
+
+  /* ---------------- emblems (drawn at the front and back of the plate) ---------------- */
+  function path(ctx, pts) { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); }
+  const EMBLEMS = {
+    heart(ctx, s) {
+      ctx.beginPath();
+      ctx.moveTo(0, s * 0.42);
+      ctx.bezierCurveTo(-s * 0.85, -s * 0.12, -s * 0.45, -s * 0.72, 0, -s * 0.28);
+      ctx.bezierCurveTo(s * 0.45, -s * 0.72, s * 0.85, -s * 0.12, 0, s * 0.42);
+      ctx.fill();
+    },
+    flame(ctx, s) {
+      for (const [dx, k] of [[-0.42, 0.75], [0, 1], [0.42, 0.75]]) {
+        ctx.beginPath();
+        ctx.moveTo(dx * s, s * 0.45);
+        ctx.quadraticCurveTo(dx * s - s * 0.32 * k, 0, dx * s + s * 0.05, -s * 0.55 * k);
+        ctx.quadraticCurveTo(dx * s + s * 0.05, -s * 0.1, dx * s + s * 0.3 * k, -s * 0.15 * k);
+        ctx.quadraticCurveTo(dx * s + s * 0.3 * k, s * 0.25, dx * s, s * 0.45);
+        ctx.fill();
+      }
+    },
+    skull(ctx, s) {
+      ctx.beginPath(); ctx.ellipse(0, -s * 0.08, s * 0.42, s * 0.38, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(-s * 0.24, s * 0.18, s * 0.48, s * 0.26);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath(); ctx.arc(-s * 0.16, -s * 0.05, s * 0.11, 0, Math.PI * 2); ctx.arc(s * 0.16, -s * 0.05, s * 0.11, 0, Math.PI * 2); ctx.fill();
+      path(ctx, [[0, s * 0.08], [-s * 0.05, s * 0.18], [s * 0.05, s * 0.18]]); ctx.fill();
+      for (let i = -1; i <= 1; i++) ctx.fillRect(i * s * 0.11 - s * 0.02, s * 0.3, s * 0.04, s * 0.14);
+      ctx.globalCompositeOperation = 'source-over';
+    },
+    chevrons(ctx, s) {
+      for (const dy of [-0.28, 0.12]) {
+        path(ctx, [[-s * 0.5, (dy + 0.25) * s], [0, (dy - 0.12) * s], [s * 0.5, (dy + 0.25) * s], [s * 0.5, (dy + 0.42) * s], [0, (dy + 0.05) * s], [-s * 0.5, (dy + 0.42) * s]]);
+        ctx.fill();
+      }
+    },
+    star(ctx, s) {
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) { const r = (i % 2 ? 0.2 : 0.5) * s, a = -Math.PI / 2 + i * Math.PI / 5; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      ctx.closePath(); ctx.fill();
+    },
+    flower(ctx, s) {
+      for (let i = 0; i < 5; i++) {
+        ctx.save(); ctx.rotate(i * Math.PI * 2 / 5);
+        ctx.beginPath(); ctx.ellipse(0, -s * 0.26, s * 0.14, s * 0.24, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath(); ctx.arc(0, 0, s * 0.08, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    },
+    hex(ctx, s) {
+      const r = s * 0.17;
+      for (const [hx, hy] of [[0, 0], [-1.75, 0], [1.75, 0], [-0.87, -1.5], [0.87, -1.5], [-0.87, 1.5], [0.87, 1.5]]) {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + i * Math.PI / 3; ctx.lineTo(hx * r + Math.cos(a) * r * 0.88, hy * r + Math.sin(a) * r * 0.88); }
+        ctx.closePath(); ctx.lineWidth = s * 0.05; ctx.stroke();
+      }
+    },
+    bolt(ctx, s) { path(ctx, [[s * 0.08, -s * 0.5], [-s * 0.3, s * 0.06], [-s * 0.02, s * 0.06], [-s * 0.12, s * 0.5], [s * 0.3, -s * 0.08], [s * 0.02, -s * 0.08]]); ctx.fill(); },
+    diamond(ctx, s) {
+      path(ctx, [[0, -s * 0.48], [s * 0.36, -s * 0.1], [0, s * 0.48], [-s * 0.36, -s * 0.1]]); ctx.fill();
+      ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = s * 0.03;
+      ctx.beginPath(); ctx.moveTo(-s * 0.36, -s * 0.1); ctx.lineTo(s * 0.36, -s * 0.1); ctx.moveTo(0, -s * 0.48); ctx.lineTo(-s * 0.12, -s * 0.1); ctx.lineTo(0, s * 0.48); ctx.lineTo(s * 0.12, -s * 0.1); ctx.closePath(); ctx.stroke();
+      ctx.globalCompositeOperation = 'source-over';
+    },
+    checker(ctx, s) {
+      const n = 4, c = s * 0.9 / n;
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if ((x + y) % 2 === 0) ctx.fillRect(-s * 0.45 + x * c, -s * 0.45 + y * c, c, c);
+      ctx.lineWidth = s * 0.03; ctx.strokeRect(-s * 0.45, -s * 0.45, s * 0.9, s * 0.9);
+    },
+    bat(ctx, s) {
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 0.12);
+      ctx.quadraticCurveTo(-s * 0.2, -s * 0.32, -s * 0.55, -s * 0.22);
+      ctx.quadraticCurveTo(-s * 0.42, -s * 0.05, -s * 0.5, s * 0.14);
+      ctx.quadraticCurveTo(-s * 0.36, s * 0.04, -s * 0.24, s * 0.16);
+      ctx.quadraticCurveTo(-s * 0.14, s * 0.06, 0, s * 0.24);
+      ctx.quadraticCurveTo(s * 0.14, s * 0.06, s * 0.24, s * 0.16);
+      ctx.quadraticCurveTo(s * 0.36, s * 0.04, s * 0.5, s * 0.14);
+      ctx.quadraticCurveTo(s * 0.42, -s * 0.05, s * 0.55, -s * 0.22);
+      ctx.quadraticCurveTo(s * 0.2, -s * 0.32, 0, -s * 0.12);
+      ctx.fill();
+      path(ctx, [[-s * 0.1, -s * 0.16], [-s * 0.07, -s * 0.3], [0, -s * 0.18], [s * 0.07, -s * 0.3], [s * 0.1, -s * 0.16]]); ctx.fill();
+    },
+    snowflake(ctx, s) {
+      ctx.lineWidth = s * 0.07; ctx.lineCap = 'round';
+      for (let i = 0; i < 6; i++) {
+        ctx.save(); ctx.rotate(i * Math.PI / 3);
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -s * 0.45);
+        ctx.moveTo(0, -s * 0.28); ctx.lineTo(-s * 0.11, -s * 0.39); ctx.moveTo(0, -s * 0.28); ctx.lineTo(s * 0.11, -s * 0.39);
+        ctx.stroke(); ctx.restore();
+      }
+    },
+    cross(ctx, s) {
+      ctx.lineWidth = s * 0.16; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-s * 0.34, -s * 0.34); ctx.lineTo(s * 0.34, s * 0.34); ctx.moveTo(s * 0.34, -s * 0.34); ctx.lineTo(-s * 0.34, s * 0.34); ctx.stroke();
+    },
+    wings(ctx, s) {
+      // three swept feathers per side, fanning up and out from the heart
+      for (const side of [-1, 1]) {
+        ctx.save(); ctx.scale(side, 1);
+        [[0.62, -0.42, 0.13], [0.55, -0.12, 0.11], [0.45, 0.14, 0.09]].forEach(([len, ang, wd]) => {
+          ctx.save(); ctx.translate(s * 0.14, -s * 0.02); ctx.rotate(ang);
+          ctx.beginPath(); ctx.moveTo(0, 0);
+          ctx.quadraticCurveTo(s * len * 0.5, -s * wd * 1.6, s * len, -s * wd * 0.4);
+          ctx.quadraticCurveTo(s * len * 0.55, s * wd * 0.6, 0, s * wd * 0.5);
+          ctx.closePath(); ctx.fill();
+          ctx.restore();
+        });
+        ctx.restore();
+      }
+      EMBLEMS.heart(ctx, s * 0.5);
+    },
+    spiral(ctx, s) {
+      ctx.lineWidth = s * 0.06; ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (let a = 0; a < Math.PI * 4.5; a += 0.1) { const r = s * 0.02 + a * s * 0.032; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      ctx.stroke();
+    },
+    bubbles(ctx, s) {
+      for (const [bx, by, br] of [[-0.25, -0.15, 0.2], [0.18, -0.25, 0.14], [0.22, 0.15, 0.22], [-0.2, 0.28, 0.12], [0, 0.02, 0.1]]) {
+        ctx.beginPath(); ctx.arc(bx * s, by * s, br * s, 0, Math.PI * 2); ctx.fill();
+      }
+    },
+    paw(ctx, s) {
+      ctx.beginPath(); ctx.ellipse(0, s * 0.14, s * 0.24, s * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+      for (const [px, py] of [[-0.3, -0.12], [-0.11, -0.3], [0.11, -0.3], [0.3, -0.12]]) { ctx.beginPath(); ctx.ellipse(px * s, py * s, s * 0.09, s * 0.12, px, 0, Math.PI * 2); ctx.fill(); }
+    },
+  };
+
+  /* ---------------- design catalogue ---------------- */
+  const glowRing = () => [{ x: 0.05, y: 0.03, w: 0.9, h: 0.94, stroke: 10, radius: 0.12, a: 1 }];
+  const DESIGNS = [
+    { key: 'bars', name: 'Classic Bars', rects: () => [...sideBars(), ...endBars()] },
+    { key: 'led', name: 'LED Strip', rects: () => [...ledSides(), ...ledEnds()] },
+    { key: 'ring', name: 'Glow Ring', rects: glowRing },
+    { key: 'sides', name: 'Side Tubes', rects: sideBars },
+    { key: 'double', name: 'Double Tubes', rects: () => [pill(0.04, 0.15, 0.05, 0.7), pill(0.13, 0.22, 0.03, 0.56), pill(0.91, 0.15, 0.05, 0.7), pill(0.84, 0.22, 0.03, 0.56)] },
+    { key: 'hearts', name: 'Hearts', emblem: 'heart' },
+    { key: 'flames', name: 'Flames', emblem: 'flame' },
+    { key: 'skulls', name: 'Skulls', emblem: 'skull' },
+    { key: 'chevrons', name: 'Chevrons', emblem: 'chevrons' },
+    { key: 'stars', name: 'Stars', emblem: 'star' },
+    { key: 'flowers', name: 'Flowers', emblem: 'flower' },
+    { key: 'hexes', name: 'Hex Grid', emblem: 'hex' },
+    { key: 'bolts', name: 'Lightning', emblem: 'bolt' },
+    { key: 'diamonds', name: 'Diamonds', emblem: 'diamond' },
+    { key: 'checker', name: 'Checkered', emblem: 'checker' },
+    { key: 'bats', name: 'Bats', emblem: 'bat' },
+    { key: 'snow', name: 'Snowflakes', emblem: 'snowflake' },
+    { key: 'cross', name: 'Crosses', emblem: 'cross' },
+    { key: 'wings', name: 'Winged Heart', emblem: 'wings' },
+    { key: 'spiral', name: 'Spirals', emblem: 'spiral' },
+    { key: 'bubbles', name: 'Bubbles', emblem: 'bubbles' },
+    { key: 'paws', name: 'Paw Prints', emblem: 'paw' },
+    { key: 'text', name: 'Custom Text', text: true },
+  ];
+  const BY_KEY = Object.fromEntries(DESIGNS.map((d) => [d.key, d]));
+
+  function normalize(u) {
+    const d = NEON_DEFAULTS;
+    u = u && typeof u === 'object' ? u : {};
+    const num = (v, def, min, max) => (isFinite(+v) && v !== null && v !== '' ? U.clamp(+v, min, max) : def);
+    const col = Array.isArray(u.color) && u.color.length === 3 && u.color.every((v) => isFinite(+v)) ? u.color.map((v) => U.clamp(+v, 0, 1))
+      : typeof u.color === 'string' ? U.hexToRgb(u.color) : [...d.color];
+    return {
+      enabled: !!u.enabled,
+      design: BY_KEY[u.design] ? u.design : d.design,
+      text: String(u.text ?? d.text).slice(0, 14),
+      color: col,
+      brightness: num(u.brightness, d.brightness, 0, 10),
+      opacity: num(u.opacity, d.opacity, 0, 1),
+      anim: NEON_ANIMS[u.anim] ? u.anim : d.anim,
+      animSpeed: num(u.animSpeed, d.animSpeed, 0.1, 10),
+      light: u.light === undefined ? d.light : !!u.light,
+      lightBrightness: num(u.lightBrightness, d.lightBrightness, 0, 40),
+      lightRange: num(u.lightRange, d.lightRange, 0, 60),
+      imageId: String(u.imageId || '').trim(),
+    };
+  }
+
+  /** Rect list for frame-based designs (null for icon designs). */
+  function rects(design) {
+    const d = BY_KEY[design];
+    return d && d.rects ? d.rects() : null;
+  }
+  const isFrameDesign = (design) => !!(BY_KEY[design] && BY_KEY[design].rects);
+  /** Icon designs need an uploaded image unless an asset id was pasted. */
+  const needsUpload = (u) => u.enabled && !isFrameDesign(u.design) && !u.imageId;
+
+  function drawRect(ctx, r, W, H) {
+    const x = r.x * W, y = r.y * H, w = r.w * W, h = r.h * H;
+    ctx.globalAlpha = r.a ?? 1;
+    ctx.beginPath();
+    if (r.stroke) {
+      const rad = (r.radius || 0) * Math.min(W, H);
+      ctx.roundRect(x + r.stroke / 2, y + r.stroke / 2, w - r.stroke, h - r.stroke, rad);
+      ctx.lineWidth = r.stroke; ctx.stroke();
+    } else {
+      ctx.roundRect(x, y, w, h, r.pill ? Math.min(w, h) / 2 : 0);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function paint(ctx, design, text, W, H) {
+    const d = BY_KEY[design] || BY_KEY.led;
+    ctx.fillStyle = ctx.strokeStyle = '#fff';
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = W * 0.06;
+    if (d.rects) {
+      for (const r of d.rects()) drawRect(ctx, r, W, H);
+      return;
+    }
+    // icon designs: LED side strips + emblems at front and back
+    for (const r of ledSides()) drawRect(ctx, r, W, H);
+    if (d.text) {
+      ctx.font = `900 ${Math.round(W * 0.2)}px "Arial Black", Impact, "Segoe UI", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const [cx, rot] of [[0.28, -Math.PI / 2], [0.72, Math.PI / 2]]) {
+        ctx.save(); ctx.translate(cx * W, H / 2); ctx.rotate(rot);
+        ctx.fillText(String(text || '').toUpperCase(), 0, 0, H * 0.7);
+        ctx.restore();
+      }
+      for (const r of ledEnds()) drawRect(ctx, r, W, H);
+      return;
+    }
+    const s = W * 0.4;
+    for (const [cy, rot] of [[0.1, 0], [0.9, Math.PI]]) {
+      ctx.save(); ctx.translate(W / 2, cy * H); ctx.rotate(rot);
+      EMBLEMS[d.emblem](ctx, s);
+      ctx.restore();
+    }
+  }
+
+  const cache = {};
+  /** White-mask canvas for a design (portrait NEON_W x NEON_H, or scaled). */
+  function canvas(design, text = '', scale = 1) {
+    const k = `${design}|${text}|${scale}`;
+    if (cache[k]) return cache[k];
+    const c = document.createElement('canvas');
+    c.width = NEON_W * scale; c.height = NEON_H * scale;
+    paint(c.getContext('2d'), design, text, c.width, c.height);
+    cache[k] = c;
+    return c;
+  }
+  /** Soft blurred copy used for the light spill on the ground in the preview. */
+  function spill(design, text = '') {
+    const k = `spill|${design}|${text}`;
+    if (cache[k]) return cache[k];
+    const src = canvas(design, text);
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.filter = 'blur(10px)';
+    ctx.drawImage(src, 0, 0, c.width, c.height);
+    ctx.filter = 'none';
+    cache[k] = c;
+    return c;
+  }
+
+  /**
+   * GUI Frame specs for Roblox (frame designs only), including soft "halo" copies so the
+   * hard-edged Frames read as glowing tubes. Pixel units are on the 256x512 SurfaceGui canvas.
+   */
+  function guiFrames(u) {
+    const list = rects(u.design);
+    if (!list) return null;
+    const out = [];
+    for (const r of list) {
+      if (r.stroke) {
+        out.push({ ...r, stroke: r.stroke * 2.6, t: 0.8 }); // halo
+        out.push({ ...r, t: 0 });
+      } else {
+        const gx = 0.018, gy = gx * NEON_W / NEON_H;
+        out.push({ ...r, x: r.x - gx, y: r.y - gy, w: r.w + gx * 2, h: r.h + gy * 2, t: 0.75 }); // halo
+        out.push({ ...r, t: 0 });
+      }
+    }
+    return out.map((f) => ({ ...f, t: 1 - (1 - f.t) * u.opacity * (f.a ?? 1) }));
+  }
+
+  /** Luau: animates a neon SurfaceGui (+ light) on each client. Shared by the script and ModuleScript exports. */
+  const ANIMATE_FN = `local function animateNeon(gui, light, anim, speed)
+	local RunService = game:GetService("RunService")
+	local parts = {}
+	for _, item in ipairs(gui:GetDescendants()) do
+		if item:IsA("ImageLabel") then
+			table.insert(parts, { item = item, prop = "ImageTransparency", color = "ImageColor3", base = item.ImageTransparency })
+		elseif item:IsA("UIStroke") then
+			table.insert(parts, { item = item, prop = "Transparency", color = "Color", base = item.Transparency })
+		elseif item:IsA("Frame") then
+			table.insert(parts, { item = item, prop = "BackgroundTransparency", color = "BackgroundColor3", base = item.BackgroundTransparency })
+		end
+	end
+	local lightBase = light and light.Brightness or 0
+	return RunService.RenderStepped:Connect(function()
+		if not gui.Enabled then
+			return
+		end
+		local s = os.clock() * speed
+		local k, color = 1, nil
+		if anim == "pulse" then
+			k = 0.5 + 0.5 * math.sin(s * math.pi * 2)
+		elseif anim == "breathe" then
+			k = 0.65 + 0.35 * math.sin(s * 2)
+		elseif anim == "flicker" then
+			k = (math.floor(s * 12) * 7919) % 100 < 9 and 0.3 or 1
+		elseif anim == "strobe" then
+			k = (s * 4) % 1 < 0.5 and 1 or 0.1
+		elseif anim == "rainbow" then
+			color = Color3.fromHSV((s * 0.25) % 1, 0.8, 1)
+		end
+		for _, p in ipairs(parts) do
+			p.item[p.prop] = 1 - (1 - p.base) * k
+			if color then
+				p.item[p.color] = color
+			end
+		end
+		if light then
+			light.Brightness = lightBase * k
+			if color then
+				light.Color = color
+			end
+		end
+	end)
+end`;
+
+  function fxSource(u) {
+    return `-- Particly car neon animation (RunContext = Client): ${NEON_ANIMS[u.anim]}.
+local ANIM = "${u.anim}"
+local SPEED = ${U.fmt(u.animSpeed)}
+
+${ANIMATE_FN}
+
+local gui = script.Parent:WaitForChild("ParticlyNeon")
+animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED)
+`;
+  }
+
+  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN };
+})();
 </script>
 <script>
 'use strict';
@@ -2946,6 +3367,67 @@ PRESET_CATEGORIES.splice(0, PRESET_CATEGORIES.length,
 <script>
 'use strict';
 /*
+ * Car neon presets: a glowing underglow plate (see neon.js) plus a subtle particle layer.
+ * The effect Part is the plate: 6 x 0.2 x 12 studs fits a typical Roblox car.
+ */
+
+const CAR_PLATE = [6, 0.2, 12];
+const NEON_TOGGLE = { mode: 'vehicle', key: 'N', toggle: true, buttonText: 'NEON' };
+
+const haze = (color) => ({ Name: 'Neon Haze', ...T('rbx_ff_glow'), Color: color, Size: [[0, 3, 1], [1, 5]], Transparency: [[0, 1], [0.4, 0.82], [1, 1]], LightEmission: 1, Rate: 5, Lifetime: [1.5, 2.5], Speed: [0.1, 0.4], EmissionDirection: 'Bottom', Shape: 'Box', ShapeStyle: 'Surface' });
+const twinkles = (color) => ({ Name: 'Twinkles', ...T('rbx_sparkles'), Color: color, Size: [[0, 0], [0.5, 0.4, 0.2], [1, 0]], LightEmission: 1, Brightness: 2, Rate: 8, Lifetime: [0.5, 0.9], Speed: [0.2, 0.6], EmissionDirection: 'Bottom', Shape: 'Box', ShapeStyle: 'Surface', Rotation: [0, 90] });
+
+function neonPreset(name, desc, underglow, layers, extra = {}) {
+  return {
+    name, category: 'Car Neon', desc, partSize: CAR_PLATE, ...extra,
+    underglow: { enabled: true, brightness: 2, opacity: 1, light: true, lightBrightness: 3, lightRange: 10, ...underglow },
+    layers,
+  };
+}
+
+PRESETS.push(
+  neonPreset('Neon Classic Bars', 'Solid glowing tubes around the car — no upload needed.', { design: 'bars', color: '#3a8dff' }, [haze('#3a8dff')]),
+  neonPreset('Neon LED Strip', 'Dotted LED strips along both sides — no upload needed.', { design: 'led', color: '#00e5ff' }, [haze('#00e5ff')]),
+  neonPreset('Neon Glow Ring', 'One continuous rounded glow ring — no upload needed.', { design: 'ring', color: '#a040ff' }, [haze('#a040ff')]),
+  neonPreset('Neon Side Tubes', 'Just the two long side tubes — no upload needed.', { design: 'sides', color: '#39ff6a' }, [haze('#39ff6a')]),
+  neonPreset('Neon Double Tubes', 'Twin tubes per side — no upload needed.', { design: 'double', color: '#ff3cf0' }, [haze('#ff3cf0')]),
+  neonPreset('Neon Rainbow LED', 'LED strip cycling through every colour.', { design: 'led', color: '#ff2a6a', anim: 'rainbow', animSpeed: 1 }, [twinkles('#ffffff')]),
+  neonPreset('Neon Toggle (press N)', 'Blue LED neon the driver switches on/off with N (mobile NEON button).', { design: 'led', color: '#3a8dff' }, [haze('#3a8dff')], { trigger: NEON_TOGGLE }),
+  neonPreset('Neon Police Strobe', 'Red strobing bars — press N for the "siren" lights.', { design: 'bars', color: '#ff1a1a', anim: 'strobe', animSpeed: 1 }, [haze('#ff1a1a')], { trigger: { ...NEON_TOGGLE, buttonText: 'SIREN' } }),
+  neonPreset('Neon Hearts', 'LED strips with glowing hearts front and back, gently breathing.', { design: 'hearts', color: '#ff4fa8', anim: 'breathe', animSpeed: 0.8 }, [
+    haze('#ff4fa8'),
+    { Name: 'Floating Hearts', ...T('heart'), Color: ['#ffb3d0', '#ff2a6a'], Size: [[0, 0], [0.3, 0.6], [1, 0.3]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightEmission: 0.6, Rate: 2, Lifetime: [1.2, 1.8], Speed: [1, 2], Shape: 'Box', ShapeStyle: 'Surface' },
+  ]),
+  neonPreset('Neon Flames', 'Hot-rod flames with flickering glow and embers.', { design: 'flames', color: '#ff7a1a', anim: 'flicker', animSpeed: 1 }, [
+    { Name: 'Embers', ...T('rbx_fire_sparks'), Color: ['#ffe08a', '#ff5a1a'], Size: [[0, 0.2], [1, 0]], LightEmission: 1, Brightness: 2, Rate: 10, Lifetime: [0.6, 1.2], Speed: [1, 3], SpreadAngle: [30, 30], Shape: 'Box', ShapeStyle: 'Surface', Acceleration: [0, 2, 0] },
+  ]),
+  neonPreset('Neon Skulls', 'Toxic green skulls with a slow pulse.', { design: 'skulls', color: '#39ff6a', anim: 'pulse', animSpeed: 0.6 }, [haze('#39ff6a')]),
+  neonPreset('Neon Chevrons', 'Racing chevrons in red.', { design: 'chevrons', color: '#ff1a1a' }, [haze('#ff1a1a')]),
+  neonPreset('Neon Gold Stars', 'Gold stars with sparkles.', { design: 'stars', color: '#ffd23a' }, [twinkles('#fff3b0')]),
+  neonPreset('Neon Flowers', 'Spring flowers in violet.', { design: 'flowers', color: '#c070ff' }, [twinkles('#f0d6ff')]),
+  neonPreset('Neon Hex Grid', 'Sci-fi honeycomb in teal.', { design: 'hexes', color: '#00e5d0', anim: 'breathe' }, [haze('#00e5d0')]),
+  neonPreset('Neon Lightning', 'Flickering yellow bolts with sparks.', { design: 'bolts', color: '#ffe23a', anim: 'flicker', animSpeed: 1.2 }, [
+    { Name: 'Sparks', ...T('rbx_fire_sparks'), Color: '#fff6b0', Size: [0.2, 0], LightEmission: 1, Brightness: 3, Rate: 15, Lifetime: [0.15, 0.3], Speed: [4, 8], SpreadAngle: [80, 80], Shape: 'Box', ShapeStyle: 'Surface' },
+  ]),
+  neonPreset('Neon Diamonds', 'Exotic white diamonds with glints.', { design: 'diamonds', color: '#eaf6ff' }, [twinkles('#ffffff')]),
+  neonPreset('Neon Checkered', 'Racing checkered flags.', { design: 'checker', color: '#ffffff' }, [haze('#d8e8ff')]),
+  neonPreset('Neon Halloween Bats', 'Orange bats with spooky mist.', { design: 'bats', color: '#ff8a1a', anim: 'breathe' }, [
+    { Name: 'Spooky Mist', ...T('rbx_smoke'), Color: '#6a3aa0', Size: [[0, 3], [1, 6]], Transparency: [[0, 1], [0.4, 0.75], [1, 1]], Rate: 3, Lifetime: [2, 3], Speed: [0.2, 0.6], Shape: 'Box', Rotation: [0, 360] },
+  ]),
+  neonPreset('Neon Snowflakes', 'Icy blue snowflakes with drifting sparkles.', { design: 'snow', color: '#9fe6ff' }, [twinkles('#ffffff')]),
+  neonPreset('Neon Crosses', 'Bold red X marks.', { design: 'cross', color: '#ff2a3a' }, [haze('#ff2a3a')]),
+  neonPreset('Neon Winged Heart', 'Golden winged hearts.', { design: 'wings', color: '#ffc83a', anim: 'breathe' }, [twinkles('#fff3b0')]),
+  neonPreset('Neon Spirals', 'Hypnotic magenta spirals, colour cycling.', { design: 'spiral', color: '#ff3cf0', anim: 'rainbow', animSpeed: 0.5 }, [haze('#ff3cf0')]),
+  neonPreset('Neon Bubbles', 'Playful teal bubbles.', { design: 'bubbles', color: '#2ad8c8' }, [haze('#2ad8c8')]),
+  neonPreset('Neon Paw Prints', 'Pink paw prints.', { design: 'paws', color: '#ff6ad5' }, [haze('#ff6ad5')]),
+  neonPreset('Neon Custom Text', 'Your own text along both sides — change it in the Car Neon panel.', { design: 'text', text: 'JDM', color: '#ffffff' }, [haze('#c8d8ff')]),
+);
+
+PRESET_CATEGORIES.splice(1, 0, 'Car Neon');
+</script>
+<script>
+'use strict';
+/*
  * Particle simulation + WebGL2 renderer that approximates Roblox's ParticleEmitter.
  * Units are studs. Roblox axes: +Y up, Front = -Z.
  */
@@ -3373,6 +3855,69 @@ class ParticleView {
     gl.drawArrays(gl.LINES, 0, out.length / 7);
   }
 
+  /** 0..1 brightness and colour of the neon plate at time t (same maths as the Roblox script). */
+  static neonState(u, t) {
+    const s = t * u.animSpeed;
+    let k = 1, col = u.color;
+    switch (u.anim) {
+      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
+      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
+      case 'flicker': k = ((Math.floor(s * 12) * 2654435761) >>> 0) % 100 < 9 ? 0.3 : 1; break;
+      case 'strobe': k = (s * 4) % 1 < 0.5 ? 1 : 0.1; break;
+      case 'rainbow': col = U.hsvToRgb([(s * 0.25) % 1, 0.8, 1]); break;
+    }
+    return { k, col };
+  }
+
+  _quad(B, o, c, ax, az, uv, rgb, a) {
+    // flat quad on the XZ plane centred at c with half extents ax (x) and az (z)
+    const y = c[1];
+    const V = (x, z, u, v) => { B[o++] = x; B[o++] = y; B[o++] = z; B[o++] = u; B[o++] = v; B[o++] = rgb[0]; B[o++] = rgb[1]; B[o++] = rgb[2]; B[o++] = a; };
+    V(c[0] - ax, c[2] - az, 0, 0); V(c[0] + ax, c[2] - az, 1, 0); V(c[0] + ax, c[2] + az, 1, 1);
+    V(c[0] - ax, c[2] - az, 0, 0); V(c[0] + ax, c[2] + az, 1, 1); V(c[0] - ax, c[2] + az, 0, 1);
+    return o;
+  }
+
+  /** Car neon: glowing plate on the part's top face + light spill on the ground. */
+  _drawNeon() {
+    const E = this.effect, u = E && E.underglow;
+    if (!u || !u.enabled) return;
+    const gl = this.gl;
+    const { k, col } = ParticleView.neonState(u, this.sim.time);
+    const p = this.sim.emitterPos, hx = E.partSize[0] / 2, hz = E.partSize[2] / 2;
+    const B = new Float32Array(54);
+    gl.uniform1f(this.uEmit, 1);
+    if (u.light && u.lightBrightness > 0) {
+      const spillA = U.clamp(0.25 * k * u.lightBrightness / 3, 0, 0.8);
+      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, col, spillA);
+      gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text, Neon.spill(u.design, u.text)));
+      gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+    const rgb = col.map((v) => v * Math.max(0.2, u.brightness / 2));
+    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * k, 0, 1));
+    gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
+    gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  _canvasTexture(key, src) {
+    const gl = this.gl;
+    let rec = this.texCache[key];
+    if (rec && rec.src === src) return rec.tex;
+    if (!rec) { rec = { tex: gl.createTexture() }; this.texCache[key] = rec; }
+    rec.src = src;
+    gl.bindTexture(gl.TEXTURE_2D, rec.tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return rec.tex;
+  }
+
   render() {
     const gl = this.gl;
     this._resize();
@@ -3395,6 +3940,7 @@ class ParticleView {
     gl.bindVertexArray(this.pVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pVbo);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    this._drawNeon();
 
     const layers = this.effect.layers.map((L, i) => ({ L, i })).filter(({ L }) => !L.hidden)
       .sort((a, b) => (a.L.ZOffset - b.L.ZOffset) || (a.i - b.i));
@@ -3524,6 +4070,11 @@ const Export = (() => {
         out.push(`"${L.Name}" uses an imported image. Upload it to Roblox and paste the rbxassetid into the layer's Texture field (exports with the default sparkles texture for now).`);
       }
     }
+    const u = effect.underglow;
+    if (u && u.enabled) {
+      if (Neon.needsUpload(u)) out.push(`Car neon design "${Neon.BY_KEY[u.design].name}" is an image: download its PNG (Car Neon panel), upload it to Roblox and paste the rbxassetid. Until then it exports as glowing bars.`);
+      if (effect.trigger.mode === 'character') out.push('Car neon is not included for "Attach to every character" effects.');
+    }
     const hidden = effect.layers.filter((l) => l.hidden).length;
     if (hidden) out.push(`${hidden} hidden layer${hidden > 1 ? 's are' : ' is'} not exported.`);
     return out;
@@ -3595,10 +4146,58 @@ const Export = (() => {
     return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn)}\n${ind}</Item>`;
   }
 
+  /* ---------- car neon (SurfaceGui on the Top face + SurfaceLight shining down) ---------- */
+  const xColor = (name, c) => `<Color3 name="${name}"><R>${f(c[0])}</R><G>${f(c[1])}</G><B>${f(c[2])}</B></Color3>`;
+  const xUDim2 = (name, xs, xo, ys, yo) => `<UDim2 name="${name}"><XS>${f(xs)}</XS><XO>${f(xo)}</XO><YS>${f(ys)}</YS><YO>${f(yo)}</YO></UDim2>`;
+  const item = (cls, ind, props, kids = []) => `${ind}<Item class="${cls}" referent="${ref()}">\n${ind}\t<Properties>\n${props.filter(Boolean).map((p) => ind + '\t\t' + p).join('\n')}\n${ind}\t</Properties>${kids.length ? '\n' + kids.join('\n') : ''}\n${ind}</Item>`;
+  /** Neon image or Frames: frame designs need no upload; icon designs fall back to bars until uploaded. */
+  const neonFrames = (u) => Neon.guiFrames(u.imageId || Neon.isFrameDesign(u.design) ? u : { ...u, design: 'bars' });
+
+  function neonXml(effect, ind, on) {
+    const u = effect.underglow;
+    if (!u || !u.enabled) return [];
+    const kids = [];
+    if (u.imageId) {
+      kids.push(item('ImageLabel', ind + '\t', [
+        `<string name="Name">Design</string>`, `<float name="BackgroundTransparency">1</float>`,
+        `<Content name="Image"><url>${esc(u.imageId)}</url></Content>`, xColor('ImageColor3', u.color),
+        `<float name="ImageTransparency">${f(1 - u.opacity)}</float>`, xUDim2('Size', 1, 0, 1, 0),
+      ]));
+    } else {
+      neonFrames(u).forEach((fr, i) => {
+        const deco = fr.stroke
+          ? [item('UICorner', ind + '\t\t', [`<UDim name="CornerRadius"><S>${f(fr.radius || 0)}</S><O>0</O></UDim>`]),
+            item('UIStroke', ind + '\t\t', [xColor('Color', u.color), `<float name="Thickness">${f(fr.stroke)}</float>`, `<float name="Transparency">${f(fr.t)}</float>`])]
+          : fr.pill ? [item('UICorner', ind + '\t\t', [`<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>`])] : [];
+        kids.push(item('Frame', ind + '\t', [
+          `<string name="Name">Glow${i + 1}</string>`, xColor('BackgroundColor3', u.color),
+          `<float name="BackgroundTransparency">${f(fr.stroke ? 1 : fr.t)}</float>`, `<int name="BorderSizePixel">0</int>`,
+          xUDim2('Position', fr.x, 0, fr.y, 0), xUDim2('Size', fr.w, 0, fr.h, 0),
+        ], deco));
+      });
+    }
+    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1 })}</BinaryString>`;
+    const out = [item('SurfaceGui', ind, [
+      `<string name="Name">ParticlyNeon</string>`, `<token name="Face">1</token>`, `<bool name="Enabled">${on}</bool>`,
+      `<float name="LightInfluence">0</float>`, `<float name="Brightness">${f(u.brightness)}</float>`,
+      `<token name="SizingMode">0</token>`, `<Vector2 name="CanvasSize"><X>${NEON_W}</X><Y>${NEON_H}</Y></Vector2>`, neonAttr,
+    ], kids)];
+    if (u.light && u.lightBrightness > 0) {
+      out.push(item('SurfaceLight', ind, [
+        `<string name="Name">ParticlyNeonLight</string>`, `<token name="Face">4</token>`, `<bool name="Enabled">${on}</bool>`,
+        xColor('Color', u.color), `<float name="Brightness">${f(u.lightBrightness)}</float>`, `<float name="Range">${f(u.lightRange)}</float>`,
+        `<float name="Angle">120</float>`, `<bool name="Shadows">false</bool>`, neonAttr,
+      ]));
+    }
+    if (u.anim !== 'none') out.push(scriptXml('Script', 'ParticlyNeonFx', Neon.fxSource(u), ind, 'Client'));
+    return out;
+  }
+
   /** Emitters + ParticlyControl + behaviour scripts, as children of a Part or Attachment. */
-  function containerKids(effect, ind) {
+  function containerKids(effect, ind, withNeon = false) {
     const startOn = Behaviour.startsEnabled(effect);
     const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn));
+    if (withNeon) kids.push(...neonXml(effect, ind, startOn));
     for (const sc of Behaviour.containerScripts(effect)) kids.push(scriptXml(sc.cls, sc.name, sc.source, ind, sc.runContext));
     return kids;
   }
@@ -3614,7 +4213,7 @@ const Export = (() => {
   function partXml(effect, opts, pos, ind) {
     const s = effect.partSize;
     const mode = effect.trigger.mode;
-    const kids = containerKids(effect, ind + '\t');
+    const kids = containerKids(effect, ind + '\t', true);
     const props = [
       `<string name="Name">${esc(effect.name)}</string>`,
       `<bool name="Anchored">true</bool>`,
@@ -3720,10 +4319,94 @@ end`;
 
   const longStr = (src) => `[==[\n${src}]==]`;
 
+  /** Luau table + builder for the car neon (shared by Command Bar and ModuleScript exports). */
+  function neonLua(effect) {
+    const u = effect.underglow;
+    if (!u || !u.enabled) return { table: 'local NEON = nil', fn: '' };
+    const frames = u.imageId ? [] : neonFrames(u);
+    const rows = frames.map((fr) => `\t\t{ ${[`X = ${f(fr.x)}`, `Y = ${f(fr.y)}`, `W = ${f(fr.w)}`, `H = ${f(fr.h)}`, `T = ${f(fr.t)}`, fr.pill ? 'Pill = true' : null, fr.stroke ? `Stroke = ${f(fr.stroke)}, Radius = ${f(fr.radius || 0)}` : null].filter(Boolean).join(', ')} },`).join('\n');
+    const table = `-- Car neon: a glowing SurfaceGui on the part's Top face + a SurfaceLight lighting the road
+local NEON = {
+	Image = ${u.imageId ? lStr(u.imageId) : 'nil'},
+	Color = ${lCol(u.color)},
+	Brightness = ${f(u.brightness)},
+	Opacity = ${f(u.opacity)},
+	Light = ${u.light && u.lightBrightness > 0 ? 'true' : 'false'},
+	LightBrightness = ${f(u.lightBrightness)},
+	LightRange = ${f(u.lightRange)},
+	Anim = ${lStr(u.anim)},
+	AnimSpeed = ${f(u.animSpeed)},
+	Frames = {
+${rows}
+	},
+}`;
+    const fn = `local function buildNeon(part, on)
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "ParticlyNeon"
+	gui.Face = Enum.NormalId.Top
+	gui.LightInfluence = 0
+	gui.Brightness = NEON.Brightness
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(${NEON_W}, ${NEON_H})
+	gui.Enabled = on
+	gui:SetAttribute("ParticlyNeon", 1)
+	if NEON.Image then
+		local image = Instance.new("ImageLabel")
+		image.Name = "Design"
+		image.BackgroundTransparency = 1
+		image.Image = NEON.Image
+		image.ImageColor3 = NEON.Color
+		image.ImageTransparency = 1 - NEON.Opacity
+		image.Size = UDim2.fromScale(1, 1)
+		image.Parent = gui
+	end
+	for i, def in ipairs(NEON.Frames) do
+		local frame = Instance.new("Frame")
+		frame.Name = "Glow" .. i
+		frame.BackgroundColor3 = NEON.Color
+		frame.BackgroundTransparency = def.Stroke and 1 or def.T
+		frame.BorderSizePixel = 0
+		frame.Position = UDim2.fromScale(def.X, def.Y)
+		frame.Size = UDim2.fromScale(def.W, def.H)
+		if def.Pill or def.Stroke then
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(def.Stroke and def.Radius or 1, 0)
+			corner.Parent = frame
+		end
+		if def.Stroke then
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = NEON.Color
+			stroke.Thickness = def.Stroke
+			stroke.Transparency = def.T
+			stroke.Parent = frame
+		end
+		frame.Parent = gui
+	end
+	gui.Parent = part
+	local light = nil
+	if NEON.Light then
+		light = Instance.new("SurfaceLight")
+		light.Name = "ParticlyNeonLight"
+		light.Face = Enum.NormalId.Bottom
+		light.Color = NEON.Color
+		light.Brightness = NEON.LightBrightness
+		light.Range = NEON.LightRange
+		light.Angle = 120
+		light.Shadows = false
+		light.Enabled = on
+		light:SetAttribute("ParticlyNeon", 1)
+		light.Parent = part
+	end
+	return gui, light
+end`;
+    return { table, fn };
+  }
+
   function commandBar(effect) {
     const s = effect.partSize;
     const mode = effect.trigger.mode;
     const character = mode === 'character';
+    const neon = neonLua(effect);
     const scripts = character ? [] : Behaviour.containerScripts(effect);
     const scriptRows = scripts.map((sc) => `\t{ Class = ${lStr(sc.cls)}, Name = ${lStr(sc.name)}, RunContext = ${sc.runContext ? lStr(sc.runContext) : 'nil'}, Source = ${longStr(sc.source)} },`).join('\n');
     const how = {
@@ -3748,6 +4431,9 @@ ${scriptRows}
 }
 local CONTROL_SOURCE = ${longStr(Behaviour.CONTROL_SOURCE)}
 local CHARACTER_SOURCE = ${character ? longStr(Behaviour.characterSource(effect)) : 'nil'}
+
+${character ? 'local NEON = nil' : neon.table}
+local NEON_FX_SOURCE = ${!character && effect.underglow.enabled && effect.underglow.anim !== 'none' ? longStr(Neon.fxSource(effect.underglow)) : 'nil'}
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Selection = game:GetService("Selection")
@@ -3784,10 +4470,18 @@ local function newScript(class, name, source, parent, runContext)
 	return s
 end
 
+${character ? '' : neon.fn}
+
 local function build(parent)
 	addEmitters(parent)
 	for _, def in ipairs(SCRIPTS) do
 		newScript(def.Class, def.Name, def.Source, parent, def.RunContext)
+	end
+	if NEON and parent:IsA("BasePart") then
+		buildNeon(parent, ${Behaviour.startsEnabled(effect) ? 'true' : 'false'})
+		if NEON_FX_SOURCE then
+			newScript("Script", "ParticlyNeonFx", NEON_FX_SOURCE, parent, "Client")
+		end
 	end
 end
 
@@ -3848,6 +4542,7 @@ print(("[Particly] Added %q (%d emitters) to %d object(s)"):format(EFFECT_NAME, 
 
   function moduleScript(effect) {
     const s = effect.partSize;
+    const neon = neonLua(effect);
     const modName = U.safeName(effect.name);
     return `--[[
 	Particly effect module: ${effect.name}
@@ -3883,8 +4578,10 @@ Effect.BurstLoop = ${f(effect.burstLoop)} -- suggested seconds between bursts if
 
 Effect.Emitters = ${emittersTable(effect)}
 
-${APPLY_FN}
+${neon.table}
 
+${APPLY_FN}
+${neon.fn ? '\n' + neon.fn + '\n\n' + Neon.ANIMATE_FN + '\n' : ''}
 function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 	local created = {}
 	for _, def in ipairs(Effect.Emitters) do
@@ -3906,7 +4603,13 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 		end
 		emitter.Parent = holder
 		table.insert(created, emitter)
-	end
+	end${neon.fn ? `
+	if NEON and parent:IsA("BasePart") then
+		local gui, light = buildNeon(parent, startOn ~= false)
+		if NEON.Anim ~= "none" and game:GetService("RunService"):IsClient() then
+			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed) -- animations run on the client
+		end
+	end` : ''}
 	return created
 end
 
@@ -3926,12 +4629,29 @@ function Effect.burst(emitters: { ParticleEmitter })
 	end
 end
 
+-- Car neon on the emitters' part follows start / stop
+local function setNeon(emitters: { ParticleEmitter }, on: boolean)
+	local done = {}
+	for _, emitter in ipairs(emitters) do
+		local part = emitter:FindFirstAncestorWhichIsA("BasePart")
+		if part and not done[part] then
+			done[part] = true
+			for _, item in ipairs(part:GetChildren()) do
+				if item:GetAttribute("ParticlyNeon") then
+					item.Enabled = on
+				end
+			end
+		end
+	end
+end
+
 function Effect.start(emitters: { ParticleEmitter })
 	for _, emitter in ipairs(emitters) do
 		if not emitter:GetAttribute("EmitCount") then
 			emitter.Enabled = true
 		end
 	end
+	setNeon(emitters, true)
 	Effect.burst(emitters)
 end
 
@@ -3939,6 +4659,7 @@ function Effect.stop(emitters: { ParticleEmitter })
 	for _, emitter in ipairs(emitters) do
 		emitter.Enabled = false
 	end
+	setNeon(emitters, false)
 end
 
 function Effect.playAt(cframe: CFrame, duration: number?): BasePart
@@ -4134,7 +4855,7 @@ const Import = (() => {
       // A Particly "always on" effect re-imports with its burst layers' Enabled restored by mode
       effects.push(Model.normalizeEffect({
         name: meta.name || (nameOf(parent) || (list.length === 1 && nameOf(list[0])) || 'Imported Effect').replace(/^Particly_/, ''),
-        category: 'Imported', partSize: partSize || meta.partSize, layers, trigger: meta,
+        category: 'Imported', partSize: partSize || meta.partSize, layers, trigger: meta, underglow: meta.underglow,
         burstLoop: meta.burstLoop || (loop ? +loop[1] : undefined),
       }));
     }
@@ -4432,6 +5153,7 @@ const Import = (() => {
         tableEmitters.push(layerFromMap(m.Props.map, extra));
         return;
       }
+      if ('Frames' in m || 'LightBrightness' in m) return; // Particly's car-neon settings table, not an emitter
       const propHits = Object.keys(m).filter((k) => PROP_BY_KEY[k]).length;
       if (propHits >= 2) { tableEmitters.push(layerFromMap(m)); return; }
       for (const v of [...Object.values(m), ...tbl.arr]) walk(v, depth + 1);
@@ -4498,7 +5220,7 @@ const Import = (() => {
     if (!layers.length) throw new Error('No ParticleEmitter properties found in this code.');
     const marker = markerOf(src) || {};
     resolveDisabled(layers, marker);
-    return [Model.normalizeEffect({ name: meta.name || marker.name || 'Imported Script', category: 'Imported', partSize: meta.partSize || marker.partSize, burstLoop: marker.burstLoop || meta.burstLoop, trigger: marker, layers })];
+    return [Model.normalizeEffect({ name: meta.name || marker.name || 'Imported Script', category: 'Imported', partSize: meta.partSize || marker.partSize, burstLoop: marker.burstLoop || meta.burstLoop, trigger: marker, underglow: marker.underglow, layers })];
   }
 
   /* ---------------------------- share links ---------------------------- */
@@ -4973,9 +5695,97 @@ function refreshAll() {
   $('effectName').value = App.effect.name;
   App.view && App.view.setEffect(App.effect);
   renderEffectCard();
+  renderNeonCard();
   renderLayers();
   renderProps();
   renderTextureTab();
+}
+
+/* ============================== right panel: car neon ============================== */
+
+const neonThumbCache = {};
+/** Small tinted preview of a neon design. */
+function neonThumb(design, text, color, w = 44) {
+  const key = [design, text, color.join(','), w].join('|');
+  if (neonThumbCache[key]) return neonThumbCache[key];
+  const c = document.createElement('canvas');
+  c.width = w; c.height = w * 2;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(Neon.canvas(design, text), 0, 0, c.width, c.height);
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = U.rgbToHex(color);
+  ctx.fillRect(0, 0, c.width, c.height);
+  return (neonThumbCache[key] = c.toDataURL());
+}
+
+const NEON_SWATCHES = ['#3a8dff', '#00e5ff', '#39ff6a', '#ff2a6a', '#ff3cf0', '#a040ff', '#ffd23a', '#ff7a1a', '#ff1a1a', '#ffffff'];
+const PLATE_SIZES = [['Car', [6, 0.2, 12]], ['SUV / truck', [7, 0.2, 15]], ['Kart', [4, 0.2, 6]], ['Bike', [2, 0.2, 6]]];
+
+function renderNeonCard() {
+  const E = App.effect, u = E.underglow;
+  const card = $('neonCard');
+  const set = (k, v, redraw = true) => { u[k] = v; commit(); if (redraw) renderNeonCard(); };
+  const field = (label, title, input) => el('div', { class: 'prop' }, el('label', { title }, label), input);
+  const on = el('input', { type: 'checkbox', checked: u.enabled, title: 'Add a glowing neon plate under a car' });
+  on.addEventListener('change', () => {
+    u.enabled = on.checked;
+    if (on.checked && E.partSize[1] > 1) E.partSize = [6, 0.2, 12]; // a flat car-sized plate
+    commit(); refreshAll();
+  });
+  const head = el('div', { class: 'card-head', style: { marginBottom: u.enabled ? '8px' : 0 } },
+    el('h3', null, 'Car Neon ', el('small', null, '(underglow)')), el('label', { class: 'vt', style: { color: 'var(--text)' } }, on, 'On'));
+  if (!u.enabled) {
+    card.replaceChildren(head, el('div', { class: 'hint', style: { margin: '6px 0 0' } }, 'NFS-style glowing designs under a car — LED strips, hearts, flames, skulls, custom text… exported as a glowing SurfaceGui + road light.'));
+    return;
+  }
+  const grid = el('div', { class: 'neon-grid' }, Neon.DESIGNS.map((d) => el('button', {
+    class: 'neon-tile' + (u.design === d.key ? ' sel' : ''), title: d.name + (Neon.isFrameDesign(d.key) ? ' — no upload needed' : ' — image, upload once'),
+    style: { backgroundImage: `url(${neonThumb(d.key, u.text, u.color)})` }, onclick: () => set('design', d.key),
+  }, Neon.isFrameDesign(d.key) ? el('span', { class: 'dot' }) : null)));
+  const color = el('input', { type: 'color', value: U.rgbToHex(u.color) });
+  color.addEventListener('input', () => { u.color = U.hexToRgb(color.value); });
+  color.addEventListener('change', () => set('color', U.hexToRgb(color.value)));
+  const swatches = el('div', { class: 'seq-tools' }, NEON_SWATCHES.map((h) => el('button', { style: { background: h, width: '18px', height: '16px', padding: 0 }, title: h, onclick: () => set('color', U.hexToRgb(h)) })));
+  const anim = el('select', null, Object.entries(NEON_ANIMS).map(([k, v]) => el('option', { value: k }, v)));
+  anim.value = u.anim;
+  anim.addEventListener('change', () => set('anim', anim.value));
+  const num = (k, min, max, step) => Editors.numberField({ get: () => u[k], set: (v) => { u[k] = U.clamp(v, min, max); }, commit, min, max, step });
+  const light = el('input', { type: 'checkbox', checked: u.light });
+  light.addEventListener('change', () => set('light', light.checked));
+  const rows = [
+    grid,
+    el('div', { class: 'hint', style: { margin: 0 } }, el('b', null, Neon.BY_KEY[u.design].name), Neon.isFrameDesign(u.design) ? ' — built from glowing GUI frames, no upload needed.' : ' — exported as an image (upload once).'),
+  ];
+  if (u.design === 'text') {
+    const t = el('input', { type: 'text', value: u.text, maxlength: 14 });
+    t.addEventListener('change', () => set('text', t.value));
+    rows.push(field('Text', 'Shown along both sides of the car', t));
+  }
+  rows.push(
+    field('Colour', 'Neon colour (the design is tinted)', el('div', { class: 'row gap' }, color, swatches)),
+    field('Glow', 'SurfaceGui Brightness — above 1 blooms in-game', num('brightness', 0, 6, 0.1)),
+    field('Opacity', '', num('opacity', 0.05, 1, 0.01)),
+    field('Animation', 'Animated on each player\'s screen by a small client script', el('div', { class: 'row gap' }, anim)),
+  );
+  if (u.anim !== 'none') rows.push(field('Speed', '', num('animSpeed', 0.1, 5, 0.05)));
+  rows.push(field('Road light', 'SurfaceLight shining down so the road takes the neon colour', el('div', { class: 'row gap' }, light, u.light ? num('lightBrightness', 0, 15, 0.1) : null)));
+  if (u.light) rows.push(field('Light range', 'Studs', num('lightRange', 2, 30, 0.5)));
+  rows.push(field('Plate size', 'The neon covers the effect Part: X = car width, Z = car length', el('div', { class: 'row gap wrap' },
+    PLATE_SIZES.map(([n, sz]) => el('button', { class: 'btn small', title: sz.join(' × '), onclick: () => { E.partSize = [...sz]; commit(); refreshAll(); } }, n)))));
+  if (!Neon.isFrameDesign(u.design)) {
+    const id = el('input', { type: 'text', value: u.imageId, placeholder: 'rbxassetid://… after uploading', spellcheck: false });
+    id.addEventListener('change', () => set('imageId', parseAssetInput(id.value)));
+    rows.push(el('div', { class: u.imageId ? 'ok-note' : 'warn' },
+      u.imageId ? 'Using your uploaded image.' : 'Image design: download the PNG, upload it to Roblox (Asset Manager › Import), then paste its ID. Until then it exports as glowing bars.',
+      el('div', { class: 'row gap', style: { marginTop: '6px' } }, id,
+        el('button', { class: 'btn small', onclick: () => downloadNeonPng(u) }, '⬇ PNG'))));
+  }
+  card.replaceChildren(head, el('div', { class: 'sbody', style: { display: 'flex', flexDirection: 'column', gap: '8px', padding: 0 } }, rows));
+}
+
+function downloadNeonPng(u) {
+  const c = Neon.canvas(u.design, u.text, 2);
+  c.toBlob((b) => U.download(`particly_neon_${u.design}${u.design === 'text' ? '_' + U.safeName(u.text) : ''}.png`, b));
 }
 
 /* ============================== texture thumbnails ============================== */
@@ -5031,10 +5841,13 @@ function behaviourEditor(E) {
   const extra = [];
   if (T.mode === 'vehicle') {
     extra.push(field('Boost key', 'Keyboard key the driver holds. A matching gamepad button and an on-screen mobile button are added automatically. Effects on the same key boost together (twin exhausts).', select('key', BOOST_KEYS)));
+    const tg = el('input', { type: 'checkbox', checked: T.toggle });
+    tg.addEventListener('change', () => set('toggle', tg.checked));
+    extra.push(field('Toggle', 'On: press once to switch on, again to switch off (good for neon / lights). Off: works while the key is held (nitro).', el('label', { class: 'vt', style: { color: 'var(--text)' } }, tg, 'press on / off')));
     const bt = el('input', { type: 'text', value: T.buttonText, maxlength: 12 });
     bt.addEventListener('change', () => set('buttonText', bt.value.trim() || 'BOOST'));
     extra.push(field('Mobile button', 'Label of the on-screen button for touch devices', bt));
-    extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
+    if (!T.toggle) extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
     extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Tip: tick "Drive" in the preview bar to see it streaming behind a moving car. Exhausts emit from the part\'s Back face (+Z).'));
   }
   if (T.mode === 'touch' || T.mode === 'prompt') {
@@ -5678,6 +6491,8 @@ function openHelp() {
       el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons).'),
       el('li', null, el('b', null, 'Attach to every character'), ': auras, trails, footstep dust.'),
       el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
+    el('h4', null, 'Car neon (underglow)'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload.'),
     el('h4', null, 'Textures'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),

@@ -22,6 +22,11 @@ const Export = (() => {
         out.push(`"${L.Name}" uses an imported image. Upload it to Roblox and paste the rbxassetid into the layer's Texture field (exports with the default sparkles texture for now).`);
       }
     }
+    const u = effect.underglow;
+    if (u && u.enabled) {
+      if (Neon.needsUpload(u)) out.push(`Car neon design "${Neon.BY_KEY[u.design].name}" is an image: download its PNG (Car Neon panel), upload it to Roblox and paste the rbxassetid. Until then it exports as glowing bars.`);
+      if (effect.trigger.mode === 'character') out.push('Car neon is not included for "Attach to every character" effects.');
+    }
     const hidden = effect.layers.filter((l) => l.hidden).length;
     if (hidden) out.push(`${hidden} hidden layer${hidden > 1 ? 's are' : ' is'} not exported.`);
     return out;
@@ -93,10 +98,58 @@ const Export = (() => {
     return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn)}\n${ind}</Item>`;
   }
 
+  /* ---------- car neon (SurfaceGui on the Top face + SurfaceLight shining down) ---------- */
+  const xColor = (name, c) => `<Color3 name="${name}"><R>${f(c[0])}</R><G>${f(c[1])}</G><B>${f(c[2])}</B></Color3>`;
+  const xUDim2 = (name, xs, xo, ys, yo) => `<UDim2 name="${name}"><XS>${f(xs)}</XS><XO>${f(xo)}</XO><YS>${f(ys)}</YS><YO>${f(yo)}</YO></UDim2>`;
+  const item = (cls, ind, props, kids = []) => `${ind}<Item class="${cls}" referent="${ref()}">\n${ind}\t<Properties>\n${props.filter(Boolean).map((p) => ind + '\t\t' + p).join('\n')}\n${ind}\t</Properties>${kids.length ? '\n' + kids.join('\n') : ''}\n${ind}</Item>`;
+  /** Neon image or Frames: frame designs need no upload; icon designs fall back to bars until uploaded. */
+  const neonFrames = (u) => Neon.guiFrames(u.imageId || Neon.isFrameDesign(u.design) ? u : { ...u, design: 'bars' });
+
+  function neonXml(effect, ind, on) {
+    const u = effect.underglow;
+    if (!u || !u.enabled) return [];
+    const kids = [];
+    if (u.imageId) {
+      kids.push(item('ImageLabel', ind + '\t', [
+        `<string name="Name">Design</string>`, `<float name="BackgroundTransparency">1</float>`,
+        `<Content name="Image"><url>${esc(u.imageId)}</url></Content>`, xColor('ImageColor3', u.color),
+        `<float name="ImageTransparency">${f(1 - u.opacity)}</float>`, xUDim2('Size', 1, 0, 1, 0),
+      ]));
+    } else {
+      neonFrames(u).forEach((fr, i) => {
+        const deco = fr.stroke
+          ? [item('UICorner', ind + '\t\t', [`<UDim name="CornerRadius"><S>${f(fr.radius || 0)}</S><O>0</O></UDim>`]),
+            item('UIStroke', ind + '\t\t', [xColor('Color', u.color), `<float name="Thickness">${f(fr.stroke)}</float>`, `<float name="Transparency">${f(fr.t)}</float>`])]
+          : fr.pill ? [item('UICorner', ind + '\t\t', [`<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>`])] : [];
+        kids.push(item('Frame', ind + '\t', [
+          `<string name="Name">Glow${i + 1}</string>`, xColor('BackgroundColor3', u.color),
+          `<float name="BackgroundTransparency">${f(fr.stroke ? 1 : fr.t)}</float>`, `<int name="BorderSizePixel">0</int>`,
+          xUDim2('Position', fr.x, 0, fr.y, 0), xUDim2('Size', fr.w, 0, fr.h, 0),
+        ], deco));
+      });
+    }
+    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1 })}</BinaryString>`;
+    const out = [item('SurfaceGui', ind, [
+      `<string name="Name">ParticlyNeon</string>`, `<token name="Face">1</token>`, `<bool name="Enabled">${on}</bool>`,
+      `<float name="LightInfluence">0</float>`, `<float name="Brightness">${f(u.brightness)}</float>`,
+      `<token name="SizingMode">0</token>`, `<Vector2 name="CanvasSize"><X>${NEON_W}</X><Y>${NEON_H}</Y></Vector2>`, neonAttr,
+    ], kids)];
+    if (u.light && u.lightBrightness > 0) {
+      out.push(item('SurfaceLight', ind, [
+        `<string name="Name">ParticlyNeonLight</string>`, `<token name="Face">4</token>`, `<bool name="Enabled">${on}</bool>`,
+        xColor('Color', u.color), `<float name="Brightness">${f(u.lightBrightness)}</float>`, `<float name="Range">${f(u.lightRange)}</float>`,
+        `<float name="Angle">120</float>`, `<bool name="Shadows">false</bool>`, neonAttr,
+      ]));
+    }
+    if (u.anim !== 'none') out.push(scriptXml('Script', 'ParticlyNeonFx', Neon.fxSource(u), ind, 'Client'));
+    return out;
+  }
+
   /** Emitters + ParticlyControl + behaviour scripts, as children of a Part or Attachment. */
-  function containerKids(effect, ind) {
+  function containerKids(effect, ind, withNeon = false) {
     const startOn = Behaviour.startsEnabled(effect);
     const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn));
+    if (withNeon) kids.push(...neonXml(effect, ind, startOn));
     for (const sc of Behaviour.containerScripts(effect)) kids.push(scriptXml(sc.cls, sc.name, sc.source, ind, sc.runContext));
     return kids;
   }
@@ -112,7 +165,7 @@ const Export = (() => {
   function partXml(effect, opts, pos, ind) {
     const s = effect.partSize;
     const mode = effect.trigger.mode;
-    const kids = containerKids(effect, ind + '\t');
+    const kids = containerKids(effect, ind + '\t', true);
     const props = [
       `<string name="Name">${esc(effect.name)}</string>`,
       `<bool name="Anchored">true</bool>`,
@@ -218,10 +271,94 @@ end`;
 
   const longStr = (src) => `[==[\n${src}]==]`;
 
+  /** Luau table + builder for the car neon (shared by Command Bar and ModuleScript exports). */
+  function neonLua(effect) {
+    const u = effect.underglow;
+    if (!u || !u.enabled) return { table: 'local NEON = nil', fn: '' };
+    const frames = u.imageId ? [] : neonFrames(u);
+    const rows = frames.map((fr) => `\t\t{ ${[`X = ${f(fr.x)}`, `Y = ${f(fr.y)}`, `W = ${f(fr.w)}`, `H = ${f(fr.h)}`, `T = ${f(fr.t)}`, fr.pill ? 'Pill = true' : null, fr.stroke ? `Stroke = ${f(fr.stroke)}, Radius = ${f(fr.radius || 0)}` : null].filter(Boolean).join(', ')} },`).join('\n');
+    const table = `-- Car neon: a glowing SurfaceGui on the part's Top face + a SurfaceLight lighting the road
+local NEON = {
+	Image = ${u.imageId ? lStr(u.imageId) : 'nil'},
+	Color = ${lCol(u.color)},
+	Brightness = ${f(u.brightness)},
+	Opacity = ${f(u.opacity)},
+	Light = ${u.light && u.lightBrightness > 0 ? 'true' : 'false'},
+	LightBrightness = ${f(u.lightBrightness)},
+	LightRange = ${f(u.lightRange)},
+	Anim = ${lStr(u.anim)},
+	AnimSpeed = ${f(u.animSpeed)},
+	Frames = {
+${rows}
+	},
+}`;
+    const fn = `local function buildNeon(part, on)
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "ParticlyNeon"
+	gui.Face = Enum.NormalId.Top
+	gui.LightInfluence = 0
+	gui.Brightness = NEON.Brightness
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+	gui.CanvasSize = Vector2.new(${NEON_W}, ${NEON_H})
+	gui.Enabled = on
+	gui:SetAttribute("ParticlyNeon", 1)
+	if NEON.Image then
+		local image = Instance.new("ImageLabel")
+		image.Name = "Design"
+		image.BackgroundTransparency = 1
+		image.Image = NEON.Image
+		image.ImageColor3 = NEON.Color
+		image.ImageTransparency = 1 - NEON.Opacity
+		image.Size = UDim2.fromScale(1, 1)
+		image.Parent = gui
+	end
+	for i, def in ipairs(NEON.Frames) do
+		local frame = Instance.new("Frame")
+		frame.Name = "Glow" .. i
+		frame.BackgroundColor3 = NEON.Color
+		frame.BackgroundTransparency = def.Stroke and 1 or def.T
+		frame.BorderSizePixel = 0
+		frame.Position = UDim2.fromScale(def.X, def.Y)
+		frame.Size = UDim2.fromScale(def.W, def.H)
+		if def.Pill or def.Stroke then
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(def.Stroke and def.Radius or 1, 0)
+			corner.Parent = frame
+		end
+		if def.Stroke then
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = NEON.Color
+			stroke.Thickness = def.Stroke
+			stroke.Transparency = def.T
+			stroke.Parent = frame
+		end
+		frame.Parent = gui
+	end
+	gui.Parent = part
+	local light = nil
+	if NEON.Light then
+		light = Instance.new("SurfaceLight")
+		light.Name = "ParticlyNeonLight"
+		light.Face = Enum.NormalId.Bottom
+		light.Color = NEON.Color
+		light.Brightness = NEON.LightBrightness
+		light.Range = NEON.LightRange
+		light.Angle = 120
+		light.Shadows = false
+		light.Enabled = on
+		light:SetAttribute("ParticlyNeon", 1)
+		light.Parent = part
+	end
+	return gui, light
+end`;
+    return { table, fn };
+  }
+
   function commandBar(effect) {
     const s = effect.partSize;
     const mode = effect.trigger.mode;
     const character = mode === 'character';
+    const neon = neonLua(effect);
     const scripts = character ? [] : Behaviour.containerScripts(effect);
     const scriptRows = scripts.map((sc) => `\t{ Class = ${lStr(sc.cls)}, Name = ${lStr(sc.name)}, RunContext = ${sc.runContext ? lStr(sc.runContext) : 'nil'}, Source = ${longStr(sc.source)} },`).join('\n');
     const how = {
@@ -246,6 +383,9 @@ ${scriptRows}
 }
 local CONTROL_SOURCE = ${longStr(Behaviour.CONTROL_SOURCE)}
 local CHARACTER_SOURCE = ${character ? longStr(Behaviour.characterSource(effect)) : 'nil'}
+
+${character ? 'local NEON = nil' : neon.table}
+local NEON_FX_SOURCE = ${!character && effect.underglow.enabled && effect.underglow.anim !== 'none' ? longStr(Neon.fxSource(effect.underglow)) : 'nil'}
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Selection = game:GetService("Selection")
@@ -282,10 +422,18 @@ local function newScript(class, name, source, parent, runContext)
 	return s
 end
 
+${character ? '' : neon.fn}
+
 local function build(parent)
 	addEmitters(parent)
 	for _, def in ipairs(SCRIPTS) do
 		newScript(def.Class, def.Name, def.Source, parent, def.RunContext)
+	end
+	if NEON and parent:IsA("BasePart") then
+		buildNeon(parent, ${Behaviour.startsEnabled(effect) ? 'true' : 'false'})
+		if NEON_FX_SOURCE then
+			newScript("Script", "ParticlyNeonFx", NEON_FX_SOURCE, parent, "Client")
+		end
 	end
 end
 
@@ -346,6 +494,7 @@ print(("[Particly] Added %q (%d emitters) to %d object(s)"):format(EFFECT_NAME, 
 
   function moduleScript(effect) {
     const s = effect.partSize;
+    const neon = neonLua(effect);
     const modName = U.safeName(effect.name);
     return `--[[
 	Particly effect module: ${effect.name}
@@ -381,8 +530,10 @@ Effect.BurstLoop = ${f(effect.burstLoop)} -- suggested seconds between bursts if
 
 Effect.Emitters = ${emittersTable(effect)}
 
-${APPLY_FN}
+${neon.table}
 
+${APPLY_FN}
+${neon.fn ? '\n' + neon.fn + '\n\n' + Neon.ANIMATE_FN + '\n' : ''}
 function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 	local created = {}
 	for _, def in ipairs(Effect.Emitters) do
@@ -404,7 +555,13 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 		end
 		emitter.Parent = holder
 		table.insert(created, emitter)
-	end
+	end${neon.fn ? `
+	if NEON and parent:IsA("BasePart") then
+		local gui, light = buildNeon(parent, startOn ~= false)
+		if NEON.Anim ~= "none" and game:GetService("RunService"):IsClient() then
+			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed) -- animations run on the client
+		end
+	end` : ''}
 	return created
 end
 
@@ -424,12 +581,29 @@ function Effect.burst(emitters: { ParticleEmitter })
 	end
 end
 
+-- Car neon on the emitters' part follows start / stop
+local function setNeon(emitters: { ParticleEmitter }, on: boolean)
+	local done = {}
+	for _, emitter in ipairs(emitters) do
+		local part = emitter:FindFirstAncestorWhichIsA("BasePart")
+		if part and not done[part] then
+			done[part] = true
+			for _, item in ipairs(part:GetChildren()) do
+				if item:GetAttribute("ParticlyNeon") then
+					item.Enabled = on
+				end
+			end
+		end
+	end
+end
+
 function Effect.start(emitters: { ParticleEmitter })
 	for _, emitter in ipairs(emitters) do
 		if not emitter:GetAttribute("EmitCount") then
 			emitter.Enabled = true
 		end
 	end
+	setNeon(emitters, true)
 	Effect.burst(emitters)
 end
 
@@ -437,6 +611,7 @@ function Effect.stop(emitters: { ParticleEmitter })
 	for _, emitter in ipairs(emitters) do
 		emitter.Enabled = false
 	end
+	setNeon(emitters, false)
 end
 
 function Effect.playAt(cframe: CFrame, duration: number?): BasePart
