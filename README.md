@@ -188,9 +188,12 @@ js/editors.js       curve, gradient and field widgets
 js/app.js           UI and app state
 tools/build.mjs     bundles everything into dist/Particly.html
 tools/smoke-test.cjs launches the packaged desktop app and checks it works (used by CI)
+tests/              npm test: Luau compile + Roblox simulation, round trips, UI smoke test
 desktop/main.js     Electron main process: window, menus, dialogs, file opening
 desktop/preload.js  safe bridge between the desktop shell and the web app
 .github/workflows/desktop.yml  builds + smoke-tests installers on Windows, macOS, Linux
 ```
 
 To rebuild the single-file version, run `node tools/build.mjs`.
+
+**Tests:** `npm test` exports every preset, compiles the generated Luau, runs it in a mock Roblox runtime, checks import/export round trips, and smoke-tests the UI. See `tests/README.md` for setup (Playwright and the Luau CLI). `CLAUDE.md` and `HANDOFF.md` hold the developer notes and project state.

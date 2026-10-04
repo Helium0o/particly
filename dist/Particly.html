@@ -3380,9 +3380,10 @@ const NeonPack = (() => {
     if (it && it.assetId !== assetId) { it.assetId = assetId; await save(); }
   }
   async function clear() { items = []; await save(); }
+  async function remove(id) { items = items.filter((x) => x.id !== id); await save(); }
   const exportJson = () => JSON.stringify({ particly: 1, type: 'neonpack', items });
 
-  return { load, importFiles, setAssetId, clear, exportJson, fromJson, fromTexturePack, niceName, get items() { return items; } };
+  return { load, importFiles, setAssetId, clear, remove, exportJson, fromJson, fromTexturePack, niceName, get items() { return items; } };
 })();
 </script>
 <script>

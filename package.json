@@ -13,7 +13,12 @@
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
-    "dist:linux": "electron-builder --linux --publish never"
+    "dist:linux": "electron-builder --linux --publish never",
+    "test": "node tests/run-all.cjs",
+    "test:export": "node tests/export-luau.cjs",
+    "test:luau": "node tests/run-luau.cjs",
+    "test:roundtrip": "node tests/roundtrip.cjs",
+    "test:ui": "node tests/ui.cjs"
   },
   "devDependencies": {
     "electron": "^44.5.1",
