@@ -498,7 +498,7 @@ const Import = (() => {
   async function fromText(text, hint = '') {
     const s = text.trim().replace(/^﻿/, '');
     if (!s) throw new Error('Nothing to import.');
-    if (/#fx=[zr]/.test(s) && s.length < 20000 && !/\n/.test(s)) return fromShare(s);
+    if (/#fx=[zr]/.test(s) && s.length < 500000 && !/\n/.test(s)) return fromShare(s);
     if (/^https?:\/\/\S+$/.test(s)) return fromUrl(s);
     if (s.startsWith('<roblox!')) return fromRbxmx(s);
     if (/\.rbxmx?$/i.test(hint) || s.startsWith('<roblox') || s.startsWith('<?xml')) return fromRbxmx(s);

@@ -2,11 +2,57 @@
 
 Design Roblox **ParticleEmitter** effects with a live 3D preview, then drop them straight into Roblox Studio.
 
-- **No install.** It's a single HTML page. Open `dist/Particly.html` (or `index.html`) in Chrome, Edge, Firefox or Safari. Works offline.
+- **No install needed.** It's a single HTML page, and there's also a desktop app for Windows, Mac and Linux (see below). Open `dist/Particly.html` (or `index.html`) in Chrome, Edge, Firefox or Safari. Works offline.
 - **54 ready-made effects** in 7 categories: fire, smoke & gas, magic, weather & nature, combat & impact, sci-fi & energy, and fun & rewards.
 - **Build your own:** layer as many emitters as you want, and edit every ParticleEmitter property with curve and gradient editors. There's also a random generator, a "vary" button, and scale, hue and timing tools.
 - **One-click export to Roblox:** a `.rbxmx` model you drag into Studio, a Command Bar script, or a ModuleScript to use from game code.
 - **Import from anywhere:** `.rbxmx` saved from Studio, Luau code from tutorials or the DevForum, Particly JSON files and share links, URLs, and your own images.
+
+## Desktop app (Windows / Mac / Linux)
+
+Particly also runs as a normal desktop app with its own window and menus.
+
+| Download | What it is |
+| --- | --- |
+| `Particly-Setup-<version>.exe` | Windows installer. Adds Start-menu and desktop shortcuts. |
+| `Particly-Portable-<version>.exe` | Windows, no install needed. Run it from anywhere, e.g. a USB stick. |
+| `Particly-<version>-arm64.dmg` / `-x64.dmg` | macOS, for Apple Silicon and Intel Macs. |
+| `Particly-<version>.AppImage` | Linux. Run `chmod +x` on it, then start it. |
+
+Where to get them:
+
+- Every push builds them automatically: open **GitHub → Actions → Desktop builds**, pick the latest run and download the `Particly-Windows` (or macOS/Linux) artifact.
+- Pushing a version tag (for example `git tag v1.0.0 && git push --tags`) also attaches them to a **GitHub Release**.
+
+The builds are **unsigned**, so the first launch shows a warning:
+
+- **Windows** (SmartScreen): click **More info → Run anyway**.
+- **macOS**: right-click the app, choose **Open**, then confirm **Open**.
+
+What the desktop app adds over the browser version:
+
+- **Native menus with shortcuts:**
+  - Ctrl+N new effect, Ctrl+O open, Ctrl+I import, Ctrl+E export, Ctrl+S save to library
+  - Ctrl+Shift+R random effect, Ctrl+B emit a burst, Ctrl+F frame the particles, F1 quick guide
+- **Real Open/Save dialogs.** Exports go wherever you choose, and the app remembers your last export folder.
+- **Opening files from Windows Explorer:** right-click a `.rbxmx`, `.json`, `.lua` or image file and choose **Open with → Particly**, or drag it onto the app icon.
+- **Remembers its window** size and position between launches.
+- **Works without a usable GPU:** if WebGL can't start (for example, on old or blocklisted graphics drivers), the app restarts itself once in software-rendering mode and stays in that mode.
+- Your library and settings are stored in `%APPDATA%\Particly` on Windows, `~/Library/Application Support/Particly` on macOS, and `~/.config/Particly` on Linux. **Help → Open Data Folder** opens it.
+
+Share *links* only work from a hosted web page. In the desktop app the Share tab gives you a **share code** instead. Your friend pastes the code into Particly's Import box, in either the web or the desktop version.
+
+### Building it yourself
+
+```bash
+npm install          # installs Electron + electron-builder
+npm start            # run the desktop app from source
+npm run dist:win     # Windows installer + portable .exe  -> release/
+npm run dist:mac     # macOS .dmg (must be run on a Mac)
+npm run dist:linux   # Linux AppImage
+```
+
+On Linux you can also build the Windows `.exe` files if Wine is installed, including 32-bit Wine (`wine32:i386`).
 
 ## Quick start
 
@@ -65,6 +111,10 @@ js/importers.js     JSON / .rbxmx / Luau parser / URLs
 js/editors.js       curve, gradient and field widgets
 js/app.js           UI and app state
 tools/build.mjs     bundles everything into dist/Particly.html
+tools/smoke-test.cjs launches the packaged desktop app and checks it works (used by CI)
+desktop/main.js     Electron main process: window, menus, dialogs, file opening
+desktop/preload.js  safe bridge between the desktop shell and the web app
+.github/workflows/desktop.yml  builds + smoke-tests installers on Windows, macOS, Linux
 ```
 
 To rebuild the single-file version, run `node tools/build.mjs`.

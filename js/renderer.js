@@ -224,7 +224,7 @@ class ParticleView {
     this.canvas = canvas;
     this.thumb = !!opts.thumb;
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, preserveDrawingBuffer: this.thumb });
-    if (!gl) throw new Error('WebGL2 is not available in this browser.');
+    if (!gl || gl.isContextLost()) throw new Error('WebGL2 is not available in this browser.');
     this.gl = gl;
     this.sim = new Sim();
     this.effect = null;

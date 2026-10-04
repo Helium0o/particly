@@ -420,7 +420,8 @@ return Effect
     const e = U.clone(effect);
     delete e.textures;
     const { z, bytes } = await U.deflate(JSON.stringify(e));
-    const base = location.href.split('#')[0];
+    // Over http(s) we can hand out a real link; from a file (desktop app) a bare code is portable.
+    const base = /^https?:/.test(location.protocol) ? location.href.split('#')[0] : '';
     return `${base}#fx=${z ? 'z' : 'r'}${U.bytesToB64url(bytes)}`;
   }
 

@@ -103,6 +103,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 }
 .card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .card.current { border-color: var(--accent2); }
+.card .thumb[src=""] { visibility: hidden; }
 .card .thumb { width: 100%; aspect-ratio: 4/3; display: block; background: #0b0d13; object-fit: cover; }
 .card .label { padding: 5px 7px; font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .badge { position: absolute; top: 5px; right: 5px; background: #000a; border-radius: 4px; font-size: 10px; padding: 1px 5px; color: #fff; }
@@ -1716,7 +1717,7 @@ class ParticleView {
     this.canvas = canvas;
     this.thumb = !!opts.thumb;
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, preserveDrawingBuffer: this.thumb });
-    if (!gl) throw new Error('WebGL2 is not available in this browser.');
+    if (!gl || gl.isContextLost()) throw new Error('WebGL2 is not available in this browser.');
     this.gl = gl;
     this.sim = new Sim();
     this.effect = null;
@@ -2455,7 +2456,8 @@ return Effect
     const e = U.clone(effect);
     delete e.textures;
     const { z, bytes } = await U.deflate(JSON.stringify(e));
-    const base = location.href.split('#')[0];
+    // Over http(s) we can hand out a real link; from a file (desktop app) a bare code is portable.
+    const base = /^https?:/.test(location.protocol) ? location.href.split('#')[0] : '';
     return `${base}#fx=${z ? 'z' : 'r'}${U.bytesToB64url(bytes)}`;
   }
 
@@ -2963,7 +2965,7 @@ const Import = (() => {
   async function fromText(text, hint = '') {
     const s = text.trim().replace(/^﻿/, '');
     if (!s) throw new Error('Nothing to import.');
-    if (/#fx=[zr]/.test(s) && s.length < 20000 && !/\n/.test(s)) return fromShare(s);
+    if (/#fx=[zr]/.test(s) && s.length < 500000 && !/\n/.test(s)) return fromShare(s);
     if (/^https?:\/\/\S+$/.test(s)) return fromUrl(s);
     if (s.startsWith('<roblox!')) return fromRbxmx(s);
     if (/\.rbxmx?$/i.test(hint) || s.startsWith('<roblox') || s.startsWith('<?xml')) return fromRbxmx(s);
@@ -3852,7 +3854,13 @@ function renderTextureTab() {
 
 function modal(title, body, { width } = {}) {
   const back = el('div', { class: 'modal-back' });
-  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); };
+  const close = () => {
+    back.remove();
+    document.removeEventListener('keydown', onKey);
+    if (App.closeModal === close) App.closeModal = null;
+  };
+  if (App.closeModal) App.closeModal();
+  App.closeModal = close;
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   const box = el('div', { class: 'modal', style: width ? { width: `min(${width}px, 100%)` } : null },
     el('header', null, el('h2', null, title), el('button', { class: 'close', title: 'Close', onclick: close }, '×')),
@@ -3942,7 +3950,9 @@ function openExport() {
     ];
   };
   const shareTab = () => {
-    const linkIn = el('input', { type: 'text', readonly: true, placeholder: 'Click "Create link"', style: { flex: 1 } });
+    // Opened from a file (desktop app / local HTML) a URL is useless to others, so share a code instead.
+    const asCode = !/^https?:/.test(location.protocol);
+    const linkIn = el('input', { type: 'text', readonly: true, placeholder: asCode ? 'Click "Create code"' : 'Click "Create link"', style: { flex: 1 } });
     const hasImages = Object.keys(E.textures).length > 0;
     return [
       el('h4', null, 'Particly file (.json)'),
@@ -3950,10 +3960,10 @@ function openExport() {
       el('div', { class: 'row gap' },
         el('button', { class: 'btn primary', onclick: () => U.download(`${base}.particly.json`, Export.json(E), 'application/json') }, '⬇ Download .json'),
         el('button', { class: 'btn', onclick: () => U.copy(Export.json(E)) }, '⧉ Copy JSON')),
-      el('h4', null, 'Share link'),
-      el('p', { class: 'hint', style: { margin: 0 } }, 'Anyone opening the link gets this effect loaded.' + (hasImages ? ' Imported images are not included in links — use the .json file for those.' : '')),
+      el('h4', null, asCode ? 'Share code' : 'Share link'),
+      el('p', { class: 'hint', style: { margin: 0 } }, (asCode ? 'Send this code to a friend — they paste it into Particly\'s Import box.' : 'Anyone opening the link gets this effect loaded.') + (hasImages ? ' Imported images are not included — use the .json file for those.' : '')),
       el('div', { class: 'row gap' }, linkIn,
-        el('button', { class: 'btn', onclick: async () => { linkIn.value = await Export.shareLink(E); linkIn.select(); U.copy(linkIn.value); } }, 'Create link')),
+        el('button', { class: 'btn', onclick: async () => { linkIn.value = await Export.shareLink(E); linkIn.select(); U.copy(linkIn.value); } }, asCode ? 'Create code' : 'Create link')),
     ];
   };
   modal('Export to Roblox', [warnBox, ...tabbed([['Roblox model (.rbxmx)', modelTab], ['Command Bar', cmdTab], ['ModuleScript', modTab], ['Share / backup', shareTab]])], { width: 760 });
@@ -4015,7 +4025,7 @@ function openImport() {
   drop.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('over'); handle([...e.dataTransfer.files]); });
-  const paste = el('textarea', { class: 'code', style: { height: '120px' }, placeholder: 'Paste Luau code, rbxmx XML, Particly JSON or a share link…' });
+  const paste = el('textarea', { class: 'code', style: { height: '120px' }, placeholder: 'Paste Luau code, rbxmx XML, Particly JSON or a share link / code…' });
   const url = el('input', { type: 'url', placeholder: 'https://… (raw .json / .rbxmx / .lua file or share link)', style: { flex: 1 } });
   const run = async (fn) => {
     try { importEffects(await fn()); m.close(); } catch (e) { U.toast(e.message || String(e), 'err', 6000); }
@@ -4031,7 +4041,7 @@ function openImport() {
     el('div', { class: 'formats' },
       el('div', null, el('b', null, 'From Roblox Studio: '), 'select a Part / ParticleEmitters → right-click → ', el('i', null, 'Save to File…'), ' → choose .rbxmx. Every emitter becomes a layer.'),
       el('div', null, el('b', null, 'Luau code: '), 'scripts from tutorials, the DevForum or your game that set ParticleEmitter properties (', el('code', null, 'pe.Rate = 20'), ', property tables, ', el('code', null, 'ColorSequence.new(…)'), ').'),
-      el('div', null, el('b', null, 'Particly files & links: '), '.json effects or whole libraries, and share links from other Particly users.'),
+      el('div', null, el('b', null, 'Particly files & links: '), '.json effects or whole libraries, and share links or codes from other Particly users.'),
       el('div', null, el('b', null, 'Images: '), 'PNG/JPG/WebP become a texture on the selected layer (white on transparent works best).')),
   ], { width: 640 });
 }
@@ -4058,7 +4068,7 @@ function openHelp() {
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Space: pause · E: emit burst · Ctrl+Z / Ctrl+Shift+Z: undo / redo · Ctrl+S: save to library · double-click the view: frame particles.'),
-    el('p', { class: 'hint', style: { margin: 0 } }, 'Everything runs locally in your browser; your library is stored in this browser only — export it to back it up.'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Everything runs locally on your computer; your library is stored on this computer only — export it to back it up.'),
   ], { width: 620 });
 }
 
@@ -4213,10 +4223,11 @@ function bindViewBar() {
   document.addEventListener('keydown', (e) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveToLibrary(); return; }
+    const desktop = !!window.particlyDesktop; // the desktop app's menu owns Ctrl+S / Z / Y
+    if (!desktop && mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveToLibrary(); return; }
     if (typing || document.querySelector('.modal-back')) return;
-    if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-    else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+    if (!desktop && mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if (!desktop && mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
     else if (e.key === ' ') { e.preventDefault(); togglePause(); }
     else if (e.key.toLowerCase() === 'e' && !mod) v.burst();
   });
@@ -4228,6 +4239,40 @@ function bindViewBar() {
     if (document.querySelector('.modal-back')) return;
     for (const f of e.dataTransfer.files) await importFile(f);
   });
+}
+
+/* ============================== desktop app bridge ============================== */
+
+function bindDesktop() {
+  const D = window.particlyDesktop;
+  if (!D) return;
+  document.body.classList.add('desktop');
+  const editingText = () => /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
+  const withoutModal = (fn) => () => { if (App.closeModal) App.closeModal(); fn(); };
+  const commands = {
+    new: withoutModal(() => $('btnNew').click()),
+    import: withoutModal(openImport),
+    export: withoutModal(openExport),
+    help: withoutModal(openHelp),
+    save: saveToLibrary,
+    undo: () => (editingText() ? document.execCommand('undo') : undo()),
+    redo: () => (editingText() ? document.execCommand('redo') : redo()),
+    random: withoutModal(() => $('btnRandom').click()),
+    vary: withoutModal(() => $('btnMutate').click()),
+    addLayer: () => addLayer(),
+    burst: () => App.view && App.view.burst(),
+    pause: () => $('vPlay').click(),
+    restart: () => App.view && App.view.reset(),
+    frame: () => App.view && App.view.frame(),
+  };
+  D.onMenu((cmd) => commands[cmd] && commands[cmd]());
+  const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+  D.onOpenFile(({ name, data }) => {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    if (App.closeModal) App.closeModal();
+    importFile(new File([data], name, { type: MIME[ext] || '' }));
+  });
+  D.ready();
 }
 
 async function boot() {
@@ -4243,6 +4288,7 @@ async function boot() {
     App.thumbView.settings.grid = false;
     App.thumbView.settings.part = false;
   } catch (e) {
+    if (window.particlyDesktop && window.particlyDesktop.webglFailed) window.particlyDesktop.webglFailed();
     $('center').replaceChildren(el('div', { class: 'empty', style: { padding: '40px' } }, 'Particly needs WebGL2 for the live preview. Please use a recent Chrome, Edge, Firefox or Safari. (', String(e.message || e), ')'));
   }
   TextureStore.onChange = () => { renderLayers(); };
@@ -4272,11 +4318,17 @@ async function boot() {
   updateUndoButtons();
 
   if (App.view) {
+    // A context lost right after start-up means the GPU can't run WebGL: the desktop app retries in software mode.
+    const bootTime = performance.now();
+    $('view').addEventListener('webglcontextlost', () => {
+      if (performance.now() - bootTime < 8000 && window.particlyDesktop && window.particlyDesktop.webglFailed) window.particlyDesktop.webglFailed();
+    });
     bindViewBar();
     startLoop();
     setTimeout(generatePresetThumbs, 300);
   }
   window.addEventListener('resize', closePopover);
+  bindDesktop();
 }
 
 boot();

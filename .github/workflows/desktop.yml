@@ -1,0 +1,75 @@
+name: Desktop builds
+
+# Builds the Particly desktop app on Windows, macOS and Linux, smoke-tests each
+# packaged app, and uploads the installers. Pushing a tag like v1.0.0 also
+# attaches them to a GitHub Release.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'desktop/**'
+      - 'tools/smoke-test.cjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build installers
+        run: npx electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false # unsigned builds
+
+      - name: Smoke test packaged app
+        if: runner.os != 'Linux'
+        run: |
+          npm install --no-save playwright-core@1.56.1
+          node tools/smoke-test.cjs
+
+      - name: Smoke test packaged app (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: |
+          npm install --no-save playwright-core@1.56.1
+          xvfb-run -a node tools/smoke-test.cjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Particly-${{ runner.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/smoke-*.png
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
