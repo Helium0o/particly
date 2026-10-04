@@ -23,7 +23,7 @@ Particly also runs as a normal desktop app with its own window and menus.
 Where to get them:
 
 - Every push builds them automatically: open **GitHub → Actions → Desktop builds**, pick the latest run and download the `Particly-Windows` (or macOS/Linux) artifact.
-- Pushing a version tag (for example `git tag v1.0.0 && git push --tags`) also attaches them to a **GitHub Release**.
+- **Releases:** pushing a version tag (for example `git tag v1.0.0 && git push --tags`), or a commit whose message contains `[release]`, publishes a **GitHub Release** with all installers attached. The release is created only after every platform builds and passes its check, and its tag is `v` + the `version` in `package.json`.
 
 The builds are **unsigned**, so the first launch shows a warning:
 
