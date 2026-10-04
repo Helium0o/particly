@@ -36,7 +36,9 @@ function writeState(patch) {
 // ("unsafe" refers to untrusted web content; this app only loads its own local files.)
 app.commandLine.appendSwitch('enable-unsafe-swiftshader');
 // If WebGL failed on a previous launch, render with the SwiftShader software GPU.
-if (readState().softwareGL) app.commandLine.appendSwitch('use-angle', 'swiftshader');
+// (Windows/Linux only: Electron's macOS build renders through Metal and has no SwiftShader.)
+const SOFTWARE_GL_SUPPORTED = !isMac;
+if (SOFTWARE_GL_SUPPORTED && readState().softwareGL) app.commandLine.appendSwitch('use-angle', 'swiftshader');
 
 /* ------------------------------ opening files ----------------------------- */
 
@@ -214,7 +216,7 @@ ipcMain.handle('open-dialog', () => showOpenDialog());
 
 // The preview couldn't get WebGL (no GPU / blocklisted driver): relaunch once in software mode.
 ipcMain.on('webgl-failed', () => {
-  if (readState().softwareGL) return;
+  if (!SOFTWARE_GL_SUPPORTED || readState().softwareGL) return;
   writeState({ softwareGL: true });
   app.relaunch();
   app.exit(0);

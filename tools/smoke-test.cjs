@@ -31,8 +31,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
   if (!exe) fail('packaged app not found in ' + release);
   console.log('Launching', exe);
-  // Software WebGL keeps the check deterministic on GPU-less CI machines.
-  const args = ['--use-angle=swiftshader', `--remote-debugging-port=${PORT}`];
+  // Software WebGL keeps the check deterministic on GPU-less CI machines. macOS has no
+  // SwiftShader backend in Electron; its CI runners provide a (virtual) Metal GPU instead.
+  const args = [`--remote-debugging-port=${PORT}`];
+  if (process.platform !== 'darwin') args.push('--use-angle=swiftshader');
   if (process.platform === 'linux') args.push('--no-sandbox');
   child = spawn(exe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', (d) => { appLog += d; });
