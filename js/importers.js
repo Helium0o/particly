@@ -83,8 +83,22 @@ const Import = (() => {
       }
     }
     if (L.mode === 'burst') L.Enabled = false;
-    else if (L.Enabled === false) { L.mode = 'burst'; L.emitCount = L.emitCount || 20; }
     return L;
+  }
+
+  /**
+   * A disabled emitter without EmitCount is a burst layer for effects that start on, but a
+   * continuous layer (switched on by its trigger) for Particly behaviours that start off.
+   */
+  function resolveDisabled(layers, trigger) {
+    const mode = trigger && trigger.mode;
+    const startsOff = mode && mode !== 'always' && mode !== 'character';
+    for (const L of layers) {
+      if (L.mode === 'burst' || L.Enabled !== false) continue;
+      if (startsOff) L.Enabled = true;
+      else { L.mode = 'burst'; L.emitCount = L.emitCount || 20; }
+    }
+    return layers;
   }
 
   function nameOf(item) {
@@ -110,6 +124,8 @@ const Import = (() => {
         pointItems.add(it);
         if (isItem(parent.parentElement)) parent = parent.parentElement;
       }
+      // Character effects: Script > Folder "Emitters" > emitters
+      if (parent && parent.getAttribute('class') === 'Folder' && isItem(parent.parentElement)) parent = parent.parentElement;
       if (!groups.has(parent)) groups.set(parent, []);
       groups.get(parent).push(it);
     }
@@ -122,13 +138,25 @@ const Import = (() => {
         if (s) partSize = [childNum(s, 'X'), childNum(s, 'Y'), childNum(s, 'Z')];
       }
       const layers = list.map((it) => ({ ...readEmitter(it), point: pointItems.has(it) }));
-      const loop = parent && [...parent.getElementsByTagName('ProtectedString')].map((p) => /LOOP_SECONDS\s*=\s*([\d.]+)/.exec(p.textContent)).find(Boolean);
+      const sources = parent ? [...parent.getElementsByTagName('ProtectedString')].map((p) => p.textContent) : [];
+      const meta = sources.map(markerOf).find(Boolean) || {};
+      const loop = sources.map((t) => /LOOP_SECONDS\s*=\s*([\d.]+)/.exec(t)).find(Boolean);
+      resolveDisabled(layers, meta);
+      // A Particly "always on" effect re-imports with its burst layers' Enabled restored by mode
       effects.push(Model.normalizeEffect({
-        name: nameOf(parent) || (list.length === 1 && nameOf(list[0])) || 'Imported Effect',
-        category: 'Imported', partSize, layers, burstLoop: loop ? +loop[1] : undefined,
+        name: meta.name || (nameOf(parent) || (list.length === 1 && nameOf(list[0])) || 'Imported Effect').replace(/^Particly_/, ''),
+        category: 'Imported', partSize: partSize || meta.partSize, layers, trigger: meta,
+        burstLoop: meta.burstLoop || (loop ? +loop[1] : undefined),
       }));
     }
     return effects;
+  }
+
+  /** Behaviour settings stored by Particly in exported scripts: --@particly {...} */
+  function markerOf(text) {
+    const m = /--@particly (\{[^\n]*\})/.exec(text || '');
+    if (!m) return null;
+    try { return JSON.parse(m[1]); } catch { return null; }
   }
 
   /* ------------------------------ Luau ------------------------------ */
@@ -479,10 +507,9 @@ const Import = (() => {
       return created.has(name) ? n >= 1 : n >= 3;
     }).map(([, L]) => L).concat(tableEmitters);
     if (!layers.length) throw new Error('No ParticleEmitter properties found in this code.');
-    for (const L of layers) {
-      if (L.Enabled === false && L.mode !== 'burst') { L.mode = 'burst'; L.emitCount = L.emitCount || 20; }
-    }
-    return [Model.normalizeEffect({ name: meta.name || 'Imported Script', category: 'Imported', partSize: meta.partSize, burstLoop: meta.burstLoop, layers })];
+    const marker = markerOf(src) || {};
+    resolveDisabled(layers, marker);
+    return [Model.normalizeEffect({ name: meta.name || marker.name || 'Imported Script', category: 'Imported', partSize: meta.partSize || marker.partSize, burstLoop: marker.burstLoop || meta.burstLoop, trigger: marker, layers })];
   }
 
   /* ---------------------------- share links ---------------------------- */

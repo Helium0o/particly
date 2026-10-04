@@ -42,6 +42,7 @@ const NORMALS = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0], [0, -1, 0], [0, 0,
 const TANGENTS = [[[0, 1, 0], [0, 0, 1]], [[1, 0, 0], [0, 0, 1]], [[1, 0, 0], [0, 1, 0]], [[0, 1, 0], [0, 0, 1]], [[1, 0, 0], [0, 0, 1]], [[1, 0, 0], [0, 1, 0]]];
 const GRID_N = { None: 1, Grid2x2: 2, Grid4x4: 4, Grid8x8: 8 };
 const MAX_PER_LAYER = 5000;
+const DRIVE_SPEED = 45; // studs/s for the "Drive" preview (car moves toward -Z / Front)
 const DEG = Math.PI / 180;
 
 class Sim {
@@ -66,12 +67,16 @@ class Sim {
     this.time += dt;
     const by = this.baseY(effect);
     const prev = this.emitterPos;
-    if (opts.move) {
+    if (opts.move && !opts.drive) {
       const a = this.time * 1.3;
       this.emitterPos = [Math.cos(a) * 7, by + Math.sin(a * 2) * 0.8, Math.sin(a) * 7];
     } else this.emitterPos = [0, by, 0];
     this.emitterVel = dt > 0 ? V3.scale(V3.sub(this.emitterPos, prev), 1 / dt) : [0, 0, 0];
     if (V3.len(this.emitterVel) > 200) this.emitterVel = [0, 0, 0];
+    // Drive: the camera rides with the car, so the world (and detached particles) streams backwards.
+    this.driveShift = opts.drive ? DRIVE_SPEED * dt : 0;
+    this.driveOffset = ((this.driveOffset || 0) + this.driveShift) % 2;
+    if (opts.drive) this.emitterVel = [0, 0, -DRIVE_SPEED];
 
     const ids = new Set(effect.layers.map((l) => l.id));
     for (const id of this.state.keys()) if (!ids.has(id)) this.state.delete(id);
@@ -100,7 +105,7 @@ class Sim {
           else this.emit(L, s, effect, L.emitCount);
         }
       }
-      this.update(L, s, ldt);
+      this.update(L, s, ldt, this.driveShift);
     }
   }
   emit(L, s, effect, n) { n = Math.min(n, 2000); for (let i = 0; i < n; i++) this.spawn(L, s, effect); }
@@ -167,7 +172,7 @@ class Sim {
     });
   }
 
-  update(L, s, dt) {
+  update(L, s, dt, worldShift = 0) {
     const a = L.Acceleration, drag = L.Drag > 0 ? Math.pow(2, -L.Drag * dt) : 1;
     const arr = s.p;
     for (let i = arr.length - 1; i >= 0; i--) {
@@ -178,6 +183,7 @@ class Sim {
       q.v[1] = (q.v[1] + a[1] * dt) * drag;
       q.v[2] = (q.v[2] + a[2] * dt) * drag;
       q.p[0] += q.v[0] * dt; q.p[1] += q.v[1] * dt; q.p[2] += q.v[2] * dt;
+      if (!q.locked) q.p[2] += worldShift;
     }
   }
 
@@ -228,7 +234,7 @@ class ParticleView {
     this.gl = gl;
     this.sim = new Sim();
     this.effect = null;
-    this.settings = { grid: true, part: true, move: false, autoBurst: true, bg: 'night', paused: false, speed: 1 };
+    this.settings = { grid: true, part: true, move: false, drive: false, autoBurst: true, bg: 'night', paused: false, speed: 1 };
     this.cam = { yaw: 0.7, pitch: 0.28, dist: 24, target: [0, 3, 0] };
     this.texCache = {};
     this.pBuf = new Float32Array(9 * 6 * 2048);
@@ -330,6 +336,13 @@ class ParticleView {
 
   /** Point the camera at the bulk of the live particles. */
   frame() {
+    if (this.settings.drive) {
+      // Ride along with the car: look at the exhaust with the trail streaming away behind it.
+      const ep = this.sim.emitterPos;
+      const size = this.effect ? Math.max(...this.effect.partSize) : 1;
+      this.cam = { yaw: 0.9, pitch: 0.22, dist: U.clamp(9 + size * 2, 9, 60), target: [ep[0], ep[1] + 0.5, ep[2] + 3 + size] };
+      return;
+    }
     const pts = [];
     const tmp = [0, 0, 0];
     for (const s of this.sim.state.values()) {
@@ -389,11 +402,11 @@ class ParticleView {
     const gc = light ? [0, 0, 0, 0.12] : [1, 1, 1, 0.08];
     const L = (a, b, c) => out.push(...a, ...c, ...b, ...c);
     if (s.grid) {
-      const R = 30;
+      const R = 30, dz = this.sim.driveOffset || 0;
       for (let i = -R; i <= R; i += 2) {
         const c = i === 0 ? (light ? [0, 0, 0, 0.3] : [1, 1, 1, 0.22]) : gc;
         L([i, 0, -R], [i, 0, R], c);
-        L([-R, 0, i], [R, 0, i], c);
+        if (i + dz <= R) L([-R, 0, i + dz], [R, 0, i + dz], gc);
       }
     }
     if (s.part && this.effect) {

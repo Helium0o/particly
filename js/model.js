@@ -224,6 +224,7 @@ const Model = {
     E.desc = String(src.desc || '');
     E.partSize = Model.vec(src.partSize || src.part, 3, EFFECT_DEFAULTS.partSize).map((v) => U.clamp(v, 0.05, 2048));
     E.burstLoop = isFinite(+src.burstLoop) && +src.burstLoop > 0 ? +src.burstLoop : EFFECT_DEFAULTS.burstLoop;
+    E.trigger = Behaviour.normalize(src.trigger); // what the effect does by itself in Roblox
     E.textures = {};
     if (src.textures && typeof src.textures === 'object') {
       for (const [k, t] of Object.entries(src.textures)) {

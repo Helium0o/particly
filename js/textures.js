@@ -244,7 +244,95 @@ const TexGen = (() => {
     });
   }
 
-  return { glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
+  function flameJet(ctx, S) {
+    // long tapered flame, bright core — nitro / thrusters (use with Squash or VelocityParallel)
+    const n = noise2(13);
+    pixels(ctx, S, (u, v) => {
+      const w = 0.42 * Math.pow(1 - v, 0.6) + 0.04;
+      const dx = Math.abs(u - 0.5) / w;
+      const a = Math.max(0, 1 - dx * dx) * smooth(0, 0.12, v) * (0.75 + 0.35 * n(u, v * 0.5));
+      return W(U.clamp(a * 1.2, 0, 1));
+    });
+  }
+  function shard(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(S * 0.5, S * 0.04); ctx.lineTo(S * 0.68, S * 0.62); ctx.lineTo(S * 0.5, S * 0.96); ctx.lineTo(S * 0.36, S * 0.58);
+    ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.35;
+    ctx.beginPath(); ctx.moveTo(S * 0.5, S * 0.04); ctx.lineTo(S * 0.5, S * 0.96); ctx.lineTo(S * 0.36, S * 0.58); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  }
+  function droplet(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const dx = (u - 0.5) * 2, dy = (v - 0.62) * 2;
+      const r = dy < 0 ? Math.abs(dx) / Math.max(0.001, 0.62 * (1 + dy / 1.25)) : Math.hypot(dx / 0.62, dy / 0.62);
+      const body = 1 - smooth(0.85, 1, dy < 0 ? Math.max(r, -dy / 1.2) : r);
+      const hl = Math.max(0, 1 - Math.hypot(u - 0.42, v - 0.6) * 9);
+      return W(Math.min(1, body * 0.85 + hl * 0.4));
+    });
+  }
+  function debris(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    [[0.22, 0.3], [0.55, 0.14], [0.86, 0.38], [0.76, 0.8], [0.4, 0.9], [0.12, 0.62]].forEach(([x, y]) => ctx.lineTo(x * S, y * S));
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; // shade one side so chunks read as 3D when tinted
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.beginPath(); ctx.moveTo(0.55 * S, 0.5 * S); [[0.86, 0.38], [0.76, 0.8], [0.4, 0.9]].forEach(([x, y]) => ctx.lineTo(x * S, y * S)); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  function cloud(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.fillStyle = '#fff';
+    [[0.32, 0.58, 0.2], [0.5, 0.45, 0.25], [0.68, 0.58, 0.2], [0.5, 0.64, 0.2], [0.2, 0.66, 0.13], [0.8, 0.66, 0.13]].forEach(([x, y, r]) => { ctx.beginPath(); ctx.arc(x * S, y * S, r * S, 0, Math.PI * 2); ctx.fill(); });
+  }
+  function hexagon(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = S * 0.07; ctx.lineJoin = 'round';
+    ctx.shadowColor = '#fff'; ctx.shadowBlur = S * 0.06;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + i * Math.PI / 3; ctx.lineTo(S / 2 + Math.cos(a) * S * 0.4, S / 2 + Math.sin(a) * S * 0.4); }
+    ctx.closePath(); ctx.stroke();
+    ctx.globalAlpha = 0.15; ctx.fillStyle = '#fff'; ctx.fill(); ctx.globalAlpha = 1;
+  }
+  function spiral(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = S * 0.06; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let a = 0; a < Math.PI * 5; a += 0.1) { const r = S * 0.03 + a * S * 0.026; ctx.lineTo(S / 2 + Math.cos(a) * r, S / 2 + Math.sin(a) * r); }
+    ctx.stroke();
+  }
+  function beam(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const dx = Math.abs(u - 0.5) * 2;
+      return W(Math.pow(Math.max(0, 1 - dx), 2.2) * smooth(0, 0.25, v) * (1 - smooth(0.75, 1, v)));
+    });
+  }
+  function feather(ctx, S) {
+    ctx.clearRect(0, 0, S, S);
+    ctx.translate(S / 2, S / 2); ctx.rotate(-0.5);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(0, 0, S * 0.14, S * 0.42, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = S * 0.015;
+    for (let i = -6; i <= 6; i++) { ctx.beginPath(); ctx.moveTo(0, i * S * 0.05); ctx.lineTo(S * 0.2, i * S * 0.05 - S * 0.08); ctx.moveTo(0, i * S * 0.05); ctx.lineTo(-S * 0.2, i * S * 0.05 - S * 0.08); ctx.stroke(); }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+  function glyph(ch, scale = 0.8) {
+    return (ctx, S) => {
+      ctx.clearRect(0, 0, S, S);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `bold ${Math.round(S * scale)}px "Segoe UI Symbol", "Apple Symbols", "DejaVu Sans", Arial, sans-serif`;
+      ctx.shadowColor = '#fff'; ctx.shadowBlur = S * 0.03;
+      ctx.fillText(ch, S / 2, S * 0.54);
+    };
+  }
+
+  return { flameJet, shard, droplet, debris, cloud, hexagon, spiral, beam, feather, glyph, glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
 })();
 
 const RBX = (n) => 'rbxasset://textures/particles/' + n;
@@ -283,6 +371,21 @@ const TEXTURES = [
   { key: 'confetti', name: 'Confetti', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.confetti },
   { key: 'slash', name: 'Slash Arc', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.slash },
   { key: 'wisp', name: 'Wispy Smoke', group: 'shape', fallback: 'rbx_smoke', gen: (c, S) => TexGen.smoke(c, S, { seed: 42 }) },
+  { key: 'flame_jet', name: 'Flame Jet', group: 'shape', fallback: 'rbx_fire', gen: TexGen.flameJet },
+  { key: 'shard', name: 'Shard', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.shard },
+  { key: 'droplet', name: 'Droplet', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.droplet },
+  { key: 'debris', name: 'Debris Chunk', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.debris },
+  { key: 'cloud', name: 'Cartoon Cloud', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.cloud },
+  { key: 'hexagon', name: 'Hexagon', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.hexagon },
+  { key: 'spiral', name: 'Spiral', group: 'shape', fallback: 'rbx_ff_vortex', gen: TexGen.spiral },
+  { key: 'beam', name: 'Light Beam', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.beam },
+  { key: 'feather', name: 'Feather', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.feather },
+  { key: 'g_plus', name: 'Plus', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('+', 1.1) },
+  { key: 'g_note', name: 'Music Note', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('\u266A', 0.8) },
+  { key: 'g_z', name: 'Sleep Z', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('Z', 0.8) },
+  { key: 'g_bang', name: 'Exclamation', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('!', 0.85) },
+  { key: 'g_dollar', name: 'Dollar', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('$', 0.8) },
+  { key: 'g_question', name: 'Question', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('?', 0.85) },
 ];
 const TEX_BY_KEY = Object.fromEntries(TEXTURES.map((t) => [t.key, t]));
 const TEX_BY_RBX = Object.fromEntries(TEXTURES.filter((t) => t.rbx).map((t) => [t.rbx.toLowerCase(), t]));

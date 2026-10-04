@@ -3,7 +3,8 @@
 Design Roblox **ParticleEmitter** effects with a live 3D preview, then drop them straight into Roblox Studio.
 
 - **No install needed.** It's a single HTML page, and there's also a desktop app for Windows, Mac and Linux (see below). Open `dist/Particly.html` (or `index.html`) in Chrome, Edge, Firefox or Safari. Works offline.
-- **54 ready-made effects** in 7 categories: fire, smoke & gas, magic, weather & nature, combat & impact, sci-fi & energy, and fun & rewards.
+- **173 ready-made effects** in 12 categories: vehicles (nitro, exhaust, drift smoke, backfire, afterburners…), fire, smoke & gas, magic, abilities, combat & impact, weapons, weather & nature, environment, sci-fi & energy, fun & rewards, and seasonal.
+- **Effects that work in your game straight away.** Each export includes the scripts for what the effect should do: hold a key while driving (nitro), play when touched, play from a ProximityPrompt, attach to every player's character, or be controlled from your own scripts.
 - **Build your own:** layer as many emitters as you want, and edit every ParticleEmitter property with curve and gradient editors. There's also a random generator, a "vary" button, and scale, hue and timing tools.
 - **One-click export to Roblox:** a `.rbxmx` model you drag into Studio, a Command Bar script, or a ModuleScript to use from game code.
 - **Import from anywhere:** `.rbxmx` saved from Studio, Luau code from tutorials or the DevForum, Particly JSON files and share links, URLs, and your own images.
@@ -62,6 +63,32 @@ On Linux you can also build the Windows `.exe` files if Wine is installed, inclu
 4. Click **⬆ Export to Roblox** and download the `.rbxmx`.
 5. In Roblox Studio, drag the file into the 3D viewport, or right-click **Workspace → Insert from File…**.
 
+## Making effects do things in your game ("In Roblox")
+
+Every effect has an **In Roblox** setting in the Effect panel. The `.rbxmx` / Command Bar export includes the scripts for it, so there's nothing to code:
+
+| In Roblox | What it does | Good for |
+| --- | --- | --- |
+| **Always on** | Continuous layers run all the time; burst layers replay every *Burst replay* seconds. | Torches, waterfalls, ambience |
+| **Vehicle boost** | Plays while the driver holds a key. A matching gamepad button and an on-screen mobile button are added, and every player sees it. | Nitro, exhaust, drift smoke, afterburners |
+| **Play when touched** | Plays when a player, or a car someone is driving, touches the part. | Boost pads, puddles, pickups, checkpoints |
+| **ProximityPrompt** | Shows a "Press E" prompt and plays when it's used. | Chests, buttons, heal stations |
+| **Attach to every character** | Put the export in StarterPlayer › StarterCharacterScripts and every character gets the effect. | Auras, trails, footstep dust |
+| **Controlled by my scripts** | Starts off. From a server Script, call `require(part.ParticlyControl).play(2)`, `.start()`, `.stop()` or `.burst()`. | Explosions, abilities, damage smoke |
+
+### Car nitro, step by step
+
+1. Pick a preset from **Vehicles**, for example *Nitro Boost (Blue)*. Its behaviour is already set to **Vehicle boost**, and the preview switches to **Drive** mode.
+2. Optionally change the colour, the key (default **Shift**) and the mobile button text.
+3. Click **Export → Roblox model (.rbxmx)**, then drag the file onto your car model in the Explorer. The car model is the one that contains the `VehicleSeat`.
+4. Move the effect Part to the exhaust pipe, rotating it so its **Back** face (+Z) points out of the pipe. When the game starts, the Part welds itself to the nearest part of the car.
+5. For twin exhausts, duplicate the Part (Ctrl+D) and move the copy to the other pipe. Both copies boost together.
+6. Press Play, sit in the driver's seat and hold Shift.
+
+Effects on different keys stay independent. For example, a car can have nitro on Shift and drift smoke on Q.
+
+You can also add the effect straight onto your car's own exhaust part instead: select that part and run the **Command Bar** export.
+
 ## Export options
 
 | Format | Best for | How to use it in Studio |
@@ -104,7 +131,8 @@ index.html          app shell
 css/style.css       styles
 js/model.js         ParticleEmitter schema, defaults, sequence math
 js/textures.js      built-in + procedural textures
-js/presets.js       the 54 presets
+js/presets*.js      the 173 presets (presets-vehicles.js = cars)
+js/behaviours.js    "In Roblox" behaviours: generates ParticlyControl + trigger scripts
 js/renderer.js      particle simulation + WebGL2 preview
 js/exporters.js     .rbxmx / Command Bar / ModuleScript / JSON / share links
 js/importers.js     JSON / .rbxmx / Luau parser / URLs

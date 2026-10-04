@@ -101,6 +101,13 @@ function loadEffect(effect, { fresh = true } = {}) {
     // Simulate a little to frame the camera, then restart bursts so they play in view.
     App.view.reset();
     App.view.setEffect(App.effect);
+    // Vehicle boosts preview best "driving": switch Drive on for them (and off again for others)
+    const drive = App.effect.trigger.mode === 'vehicle';
+    if (drive !== App.view.settings.drive) {
+      App.view.settings.drive = drive;
+      App.view.settings.move = false;
+      if ($('vDrive')) { $('vDrive').checked = drive; $('vMove').checked = false; }
+    }
     App.view.warm(U.clamp(Math.max(...App.effect.layers.map((l) => l.Lifetime[1])) * 0.8, 0.9, 3));
     App.view.frame();
     if (App.effect.layers.some((l) => l.mode === 'burst')) App.view.reset();
@@ -141,7 +148,7 @@ function renderEffectCard() {
     el('div', { class: 'sbody', style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
       el('div', { class: 'prop' }, el('label', { title: 'Size of the invisible Part that holds the emitters. Particles spawn inside/on it.' }, 'Part size'),
         Editors.multiField({ get: () => E.partSize, set: (v) => { E.partSize = v.map((x) => U.clamp(x, 0.05, 2048)); }, commit, labels: ['X', 'Y', 'Z'], step: 0.5, min: 0.05 })),
-      hasBurst ? el('div', { class: 'prop' }, el('label', { title: 'How often burst layers replay in the preview and in the exported ParticlyBurstPlayer script.' }, 'Burst replay (s)'),
+      hasBurst ? el('div', { class: 'prop' }, el('label', { title: 'How often burst layers replay in the preview (and in Roblox for "Always on" and character effects).' }, 'Burst replay (s)'),
         Editors.numberField({ get: () => E.burstLoop, set: (v) => { E.burstLoop = Math.max(0.1, v); }, commit, min: 0.2, max: 10, step: 0.1 })) : null,
       el('div', { class: 'prop' }, el('label', { title: 'Scale sizes, speeds, accelerations and the part together' }, 'Scale'),
         el('div', { class: 'row gap wrap' }, tool('½×', 'Half size', () => scaleEffect(0.5)), tool('0.8×', '', () => scaleEffect(0.8)), tool('1.25×', '', () => scaleEffect(1.25)), tool('2×', 'Double size', () => scaleEffect(2)))),
@@ -149,8 +156,50 @@ function renderEffectCard() {
         el('div', { class: 'row gap wrap' }, tool('−60°', '', () => hueShift(-60)), tool('−20°', '', () => hueShift(-20)), tool('+20°', '', () => hueShift(20)), tool('+60°', '', () => hueShift(60)), tool('Grey', 'Desaturate', () => saturate(0)))),
       el('div', { class: 'prop' }, el('label', { title: 'Make the whole effect play slower or faster (keeps the same look). Roblox TimeScale only goes down to slow motion, this works both ways.' }, 'Timing'),
         el('div', { class: 'row gap wrap' }, tool('Slower', '1.5× longer', () => timeStretch(1.5)), tool('Faster', '1.5× quicker', () => timeStretch(1 / 1.5)))),
+      behaviourEditor(E),
     ),
   );
+}
+
+/** "In Roblox": what the exported effect does by itself in a game. */
+function behaviourEditor(E) {
+  const T = E.trigger;
+  const box = el('div', { class: 'behaviour' });
+  const set = (k, v) => { T[k] = v; commit(); renderEffectCard(); };
+  const field = (label, title, input) => el('div', { class: 'prop' }, el('label', { title }, label), input);
+  const num = (k, min, max, step) => Editors.numberField({ get: () => T[k], set: (v) => { T[k] = U.clamp(v, min, max); }, commit, min, max, step });
+  const select = (k, items, labels) => {
+    const s = el('select', null, items.map((i) => el('option', { value: i }, labels ? labels[i] : i)));
+    s.value = T[k];
+    s.addEventListener('change', () => set(k, s.value));
+    return s;
+  };
+  const extra = [];
+  if (T.mode === 'vehicle') {
+    extra.push(field('Boost key', 'Keyboard key the driver holds. A matching gamepad button and an on-screen mobile button are added automatically. Effects on the same key boost together (twin exhausts).', select('key', BOOST_KEYS)));
+    const bt = el('input', { type: 'text', value: T.buttonText, maxlength: 12 });
+    bt.addEventListener('change', () => set('buttonText', bt.value.trim() || 'BOOST'));
+    extra.push(field('Mobile button', 'Label of the on-screen button for touch devices', bt));
+    extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
+    extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Tip: tick "Drive" in the preview bar to see it streaming behind a moving car. Exhausts emit from the part\'s Back face (+Z).'));
+  }
+  if (T.mode === 'touch' || T.mode === 'prompt') {
+    if (T.mode === 'prompt') {
+      const t = el('input', { type: 'text', value: T.actionText });
+      t.addEventListener('change', () => set('actionText', t.value || 'Activate'));
+      extra.push(field('Prompt text', 'Text shown on the ProximityPrompt', t));
+    }
+    extra.push(field('Play for (s)', 'How long continuous layers stay on each time', num('duration', 0.1, 30, 0.1)));
+    extra.push(field('Cooldown (s)', 'Wait before it can trigger again', num('cooldown', 0, 30, 0.1)));
+  }
+  if (T.mode === 'character') extra.push(field('Attach to', 'Body part the effect follows (HumanoidRootPart works for R6 and R15)', select('attachTo', ATTACH_POINTS)));
+  box.append(
+    el('div', { class: 'prop' }, el('label', { title: 'What the effect does by itself in your game. The export includes the scripts for it.' }, 'In Roblox'),
+      select('mode', Object.keys(BEHAVIOURS), Object.fromEntries(Object.entries(BEHAVIOURS).map(([k, v]) => [k, v.label])))),
+    el('div', { class: 'hint', style: { margin: 0 } }, BEHAVIOURS[T.mode].help),
+    ...extra,
+  );
+  return box;
 }
 
 function scaleEffect(f) {
@@ -458,11 +507,23 @@ function renderPresets() {
   $('presetGrid').replaceChildren(...items.map((p) => {
     const img = el('img', { class: 'thumb', alt: '', src: App.presetThumbs[p.id] || '' });
     img.dataset.preset = p.id;
-    const burst = p.layers.some((l) => l.mode === 'burst');
     return el('div', { class: 'card', title: p.desc, onclick: () => { loadEffect(p); U.toast(`Loaded "${p.name}"`); } },
-      img, burst ? el('span', { class: 'badge' }, '✸ burst') : null, el('div', { class: 'label' }, p.name));
+      img, presetBadge(p), el('div', { class: 'label' }, p.name));
   }));
   if (!items.length) $('presetGrid').append(el('div', { class: 'empty', style: { gridColumn: '1/-1' } }, 'No effects match.'));
+}
+
+/** Gallery badge: how the effect behaves once it's in a Roblox game. */
+function presetBadge(p) {
+  const t = p.trigger;
+  const text = {
+    vehicle: `🏎 hold ${t.key.replace('Left', '')}`,
+    touch: '👆 touch',
+    prompt: '💬 prompt',
+    character: '🧍 character',
+    script: '📜 scripted',
+  }[t.mode] || (p.layers.every((l) => l.mode === 'burst') ? '✸ burst' : null);
+  return text ? el('span', { class: 'badge', title: BEHAVIOURS[t.mode].label }, text) : null;
 }
 
 function generatePresetThumbs() {
@@ -605,18 +666,15 @@ function openExport() {
       r.addEventListener('change', () => { container = v; });
       return el('label', { class: 'vt', style: { color: 'var(--text)' } }, r, label);
     }));
-    const bp = el('input', { type: 'checkbox', checked: true });
+    const character = E.trigger.mode === 'character';
     return [
-      el('p', { class: 'hint', style: { margin: 0 } }, 'Easiest way: a Roblox model file with everything set up. No scripting needed.'),
-      radios,
-      hasBurst ? el('label', { class: 'vt', style: { color: 'var(--text)' } }, bp, 'Include the ParticlyBurstPlayer script (replays burst layers every ' + U.fmt(E.burstLoop) + 's)') : null,
-      el('button', { class: 'btn primary', onclick: () => { U.download(`${base}.rbxmx`, Export.rbxmx(E, { container, burstPlayer: bp.checked }), 'application/xml'); U.toast('Downloaded ' + base + '.rbxmx'); } }, `⬇ Download ${base}.rbxmx`),
+      el('p', { class: 'hint', style: { margin: 0 } }, 'Easiest way: a Roblox model file with everything set up — emitters plus the scripts for the behaviour below. No scripting needed.'),
+      el('div', { class: 'ok-note' }, el('b', null, 'In Roblox: '), BEHAVIOURS[E.trigger.mode].label, ' — change it under Effect › In Roblox.'),
+      character ? null : radios,
+      el('button', { class: 'btn primary', onclick: () => { U.download(`${base}.rbxmx`, Export.rbxmx(E, { container }), 'application/xml'); U.toast('Downloaded ' + base + '.rbxmx'); } }, `⬇ Download ${base}.rbxmx`),
       el('h4', null, 'Import into Roblox Studio'),
-      el('ol', null,
-        el('li', null, 'Open your place in Roblox Studio.'),
-        el('li', null, 'Drag the .rbxmx file into the 3D viewport — or right-click ', el('b', null, 'Workspace'), ' → ', el('b', null, 'Insert from File…'), ' and pick it.'),
-        el('li', null, 'Move/resize the Part where you want the effect (it\'s invisible and non-collidable). For an Attachment, drag it under any Part.'),
-        el('li', null, 'Press Play to see burst layers fire (continuous layers show in edit mode too).')),
+      el('ol', null, ...Behaviour.instructions(E).map((t) => el('li', null, t))),
+      character ? null : el('p', { class: 'hint', style: { margin: 0 } }, 'Inside the export: ', el('code', null, 'ParticlyControl'), ' (start / stop / burst / play from any server Script) plus the trigger scripts. "Emitters only" leaves the scripts out.'),
     ];
   };
   const cmdTab = () => {
@@ -759,6 +817,13 @@ function openHelp() {
       el('li', null, el('b', null, 'Export → .rbxmx'), ': drag the file into Studio. Done.'),
       el('li', null, el('b', null, 'Command Bar'), ': paste a script that builds the effect on your selected parts.'),
       el('li', null, el('b', null, 'ModuleScript'), ': spawn the effect from code (abilities, pickups, hits).')),
+    el('h4', null, '4. Make it do something in your game'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › ', el('b', null, 'In Roblox'), ' picks what the exported effect does by itself — the scripts come with the export:'),
+    el('ul', null,
+      el('li', null, el('b', null, 'Vehicle boost'), ': nitro / exhaust / drift smoke. Drop it into a car model with a VehicleSeat; the driver holds a key (gamepad button and mobile button included) and every player sees it. Tick ', el('b', null, 'Drive'), ' in the preview to see it at speed.'),
+      el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons).'),
+      el('li', null, el('b', null, 'Attach to every character'), ': auras, trails, footstep dust.'),
+      el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
     el('h4', null, 'Textures'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),
@@ -910,7 +975,8 @@ function bindViewBar() {
   $('vSpeed').onchange = (e) => { s.speed = +e.target.value; };
   $('vGrid').onchange = (e) => { s.grid = e.target.checked; };
   $('vPart').onchange = (e) => { s.part = e.target.checked; };
-  $('vMove').onchange = (e) => { s.move = e.target.checked; };
+  $('vMove').onchange = (e) => { s.move = e.target.checked; if (s.move) { s.drive = false; $('vDrive').checked = false; } };
+  $('vDrive').onchange = (e) => { s.drive = e.target.checked; if (s.drive) { s.move = false; $('vMove').checked = false; } v.frame(); };
   $('vAuto').onchange = (e) => { s.autoBurst = e.target.checked; };
   $('vBg').onchange = (e) => { s.bg = e.target.value; };
   $('vFrame').onclick = () => v.frame();

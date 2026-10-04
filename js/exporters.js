@@ -54,11 +54,14 @@ const Export = (() => {
   let refCounter = 0;
   const ref = () => 'RBX' + (refCounter++).toString(16).toUpperCase().padStart(8, '0');
 
-  function emitterXml(L, ind) {
+  /** Burst layers are always exported disabled; continuous ones only start on for some behaviours. */
+  const enabledFor = (L, startOn) => L.mode !== 'burst' && L.Enabled && startOn;
+
+  function emitterXml(L, ind, startOn = true) {
     const p = [];
     const add = (s) => p.push(ind + '\t\t' + s);
     add(`<string name="Name">${esc(L.Name)}</string>`);
-    add(`<bool name="Enabled">${L.mode === 'burst' ? 'false' : L.Enabled ? 'true' : 'false'}</bool>`);
+    add(`<bool name="Enabled">${enabledFor(L, startOn) ? 'true' : 'false'}</bool>`);
     for (const prop of PROPS) {
       const k = prop.key, v = L[k];
       switch (prop.type) {
@@ -77,38 +80,58 @@ const Export = (() => {
     return `${ind}<Item class="ParticleEmitter" referent="${ref()}">\n${ind}\t<Properties>\n${p.join('\n')}\n${ind}\t</Properties>\n${ind}</Item>`;
   }
 
-  function scriptXml(cls, name, source, ind) {
-    return `${ind}<Item class="${cls}" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(name)}</string>\n${ind}\t\t<ProtectedString name="Source"><![CDATA[${source.replace(/]]>/g, ']]]]><![CDATA[>')}]]></ProtectedString>\n${ind}\t</Properties>\n${ind}</Item>`;
+  const RUN_CONTEXT = { Legacy: 0, Server: 1, Client: 2 };
+  function scriptXml(cls, name, source, ind, runContext, children = []) {
+    const rc = runContext ? `\n${ind}\t\t<token name="RunContext">${RUN_CONTEXT[runContext]}</token>` : '';
+    const kids = children.length ? '\n' + children.join('\n') : '';
+    return `${ind}<Item class="${cls}" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(name)}</string>${rc}\n${ind}\t\t<ProtectedString name="Source"><![CDATA[${source.replace(/]]>/g, ']]]]><![CDATA[>')}]]></ProtectedString>\n${ind}\t</Properties>${kids}\n${ind}</Item>`;
   }
 
   /** Point layers sit in their own Attachment so they emit from the part's centre. */
-  function layerXml(L, ind) {
-    if (!L.point) return emitterXml(L, ind);
-    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t')}\n${ind}</Item>`;
+  function layerXml(L, ind, startOn = true) {
+    if (!L.point) return emitterXml(L, ind, startOn);
+    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn)}\n${ind}</Item>`;
+  }
+
+  /** Emitters + ParticlyControl + behaviour scripts, as children of a Part or Attachment. */
+  function containerKids(effect, ind) {
+    const startOn = Behaviour.startsEnabled(effect);
+    const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn));
+    for (const sc of Behaviour.containerScripts(effect)) kids.push(scriptXml(sc.cls, sc.name, sc.source, ind, sc.runContext));
+    return kids;
+  }
+
+  /** "Attach to every character": a Script for StarterCharacterScripts holding emitter templates. */
+  function characterXml(effect, ind) {
+    const emitters = exportLayers(effect).map((L) => layerXml(L, ind + '\t\t', true));
+    const folder = `${ind}\t<Item class="Folder" referent="${ref()}">\n${ind}\t\t<Properties>\n${ind}\t\t\t<string name="Name">Emitters</string>\n${ind}\t\t</Properties>\n${emitters.join('\n')}\n${ind}\t</Item>`;
+    const control = scriptXml('ModuleScript', 'ParticlyControl', Behaviour.CONTROL_SOURCE, ind + '\t');
+    return scriptXml('Script', 'Particly_' + U.safeName(effect.name), Behaviour.characterSource(effect), ind, null, [folder, control]);
   }
 
   function partXml(effect, opts, pos, ind) {
     const s = effect.partSize;
-    const kids = exportLayers(effect).map((L) => layerXml(L, ind + '\t'));
-    if (opts.burstPlayer && hasBurst(effect)) kids.push(scriptXml('Script', 'ParticlyBurstPlayer', burstPlayerSource(effect), ind + '\t'));
+    const mode = effect.trigger.mode;
+    const kids = containerKids(effect, ind + '\t');
     const props = [
       `<string name="Name">${esc(effect.name)}</string>`,
       `<bool name="Anchored">true</bool>`,
       `<bool name="CanCollide">false</bool>`,
       `<bool name="CanQuery">false</bool>`,
-      `<bool name="CanTouch">false</bool>`,
+      `<bool name="CanTouch">${mode === 'touch' ? 'true' : 'false'}</bool>`,
       `<bool name="CastShadow">false</bool>`,
       `<bool name="Locked">false</bool>`,
       `<float name="Transparency">1</float>`,
       `<Vector3 name="size"><X>${f(s[0])}</X><Y>${f(s[1])}</Y><Z>${f(s[2])}</Z></Vector3>`,
       `<CoordinateFrame name="CFrame"><X>${f(pos[0])}</X><Y>${f(pos[1])}</Y><Z>${f(pos[2])}</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>`,
-    ].map((x) => ind + '\t\t' + x).join('\n');
+      // Vehicle boosts: this Part welds itself to the nearest car part at runtime
+      mode === 'vehicle' ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyAutoWeld: 1 })}</BinaryString>` : null,
+    ].filter(Boolean).map((x) => ind + '\t\t' + x).join('\n');
     return `${ind}<Item class="Part" referent="${ref()}">\n${ind}\t<Properties>\n${props}\n${ind}\t</Properties>\n${kids.join('\n')}\n${ind}</Item>`;
   }
 
   function attachmentXml(effect, ind) {
-    const kids = exportLayers(effect).map((L) => emitterXml(L, ind + '\t'));
-    if (hasBurst(effect)) kids.push(scriptXml('Script', 'ParticlyBurstPlayer', burstPlayerSource(effect), ind + '\t'));
+    const kids = containerKids(effect, ind + '\t');
     return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(effect.name)}</string>\n${ind}\t</Properties>\n${kids.join('\n')}\n${ind}</Item>`;
   }
 
@@ -121,17 +144,18 @@ const Export = (() => {
    */
   function rbxmx(effect, opts = {}) {
     refCounter = 0;
+    if (effect.trigger.mode === 'character') return wrap(characterXml(effect, '\t'));
     const c = opts.container || 'part';
     if (c === 'attachment') return wrap(attachmentXml(effect, '\t'));
-    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t')).join('\n'));
-    return wrap(partXml(effect, { burstPlayer: opts.burstPlayer !== false }, [0, effect.partSize[1] / 2 + 3, 0], '\t'));
+    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t', Behaviour.startsEnabled(effect))).join('\n'));
+    return wrap(partXml(effect, {}, [0, effect.partSize[1] / 2 + 3, 0], '\t'));
   }
 
-  /** Many effects as one Model with Parts laid out in a grid. */
+  /** Many effects as one Model with Parts laid out in a grid (all set to "Always on" so you can browse them). */
   function rbxmxPack(effects, name = 'ParticlyPack') {
     refCounter = 0;
     const cols = Math.ceil(Math.sqrt(effects.length));
-    const parts = effects.map((e, i) => partXml(e, { burstPlayer: true }, [(i % cols) * 25, e.partSize[1] / 2 + 3, Math.floor(i / cols) * 25], '\t\t'));
+    const parts = effects.map((e, i) => partXml({ ...e, trigger: { ...e.trigger, mode: 'always' } }, {}, [(i % cols) * 25, e.partSize[1] / 2 + 3, Math.floor(i / cols) * 25], '\t\t'));
     return wrap(`\t<Item class="Model" referent="${ref()}">\n\t\t<Properties>\n\t\t\t<string name="Name">${esc(name)}</string>\n\t\t</Properties>\n${parts.join('\n')}\n\t</Item>`);
   }
 
@@ -169,39 +193,15 @@ const Export = (() => {
     }
     return 'nil';
   }
-  function emittersTable(effect, ind = '') {
+  function emittersTable(effect, ind = '', startOn = true) {
     const rows = exportLayers(effect).map((L) => {
       const props = PROPS.map((p) => `${ind}\t\t\t${p.key} = ${luaValue(p, L[p.key], L)},`);
-      props.unshift(`${ind}\t\t\tEnabled = ${L.mode === 'burst' ? 'false' : L.Enabled ? 'true' : 'false'},`);
+      props.unshift(`${ind}\t\t\tEnabled = ${enabledFor(L, startOn) ? 'true' : 'false'},`);
       const burst = L.mode === 'burst' ? `${ind}\t\tBurst = { Count = ${L.emitCount}, Delay = ${f(L.emitDelay)} },\n` : '';
       const point = L.point ? `${ind}\t\tPoint = true, -- emits from the centre (placed in an Attachment)\n` : '';
       return `${ind}\t{\n${ind}\t\tName = ${lStr(L.Name)},\n${point}${burst}${ind}\t\tProps = {\n${props.join('\n')}\n${ind}\t\t},\n${ind}\t},`;
     });
     return `{\n${rows.join('\n')}\n${ind}}`;
-  }
-
-  function burstPlayerSource(effect) {
-    return `-- Particly burst player: replays this effect's burst emitters every LOOP_SECONDS.
--- Burst emitters are disabled ParticleEmitters with an "EmitCount" attribute
--- (and optional "EmitDelay"). Delete this script if you trigger them yourself:
---     emitter:Emit(emitter:GetAttribute("EmitCount"))
-local LOOP_SECONDS = ${f(effect.burstLoop)}
-
-local root = script.Parent
-while root.Parent do
-	for _, emitter in ipairs(root:GetDescendants()) do
-		if emitter:IsA("ParticleEmitter") then
-			local count = emitter:GetAttribute("EmitCount")
-			if count then
-				task.delay(emitter:GetAttribute("EmitDelay") or 0, function()
-					emitter:Emit(count)
-				end)
-			end
-		end
-	end
-	task.wait(LOOP_SECONDS)
-end
-`;
   }
 
   const APPLY_FN = `local function apply(instance, props)
@@ -216,29 +216,43 @@ end
 	end
 end`;
 
-  function commandBar(effect, opts = {}) {
-    const burstPlayer = opts.burstPlayer !== false && hasBurst(effect);
+  const longStr = (src) => `[==[\n${src}]==]`;
+
+  function commandBar(effect) {
     const s = effect.partSize;
+    const mode = effect.trigger.mode;
+    const character = mode === 'character';
+    const scripts = character ? [] : Behaviour.containerScripts(effect);
+    const scriptRows = scripts.map((sc) => `\t{ Class = ${lStr(sc.cls)}, Name = ${lStr(sc.name)}, RunContext = ${sc.runContext ? lStr(sc.runContext) : 'nil'}, Source = ${longStr(sc.source)} },`).join('\n');
+    const how = {
+      vehicle: '--   * Select the car\'s exhaust Part(s) first (inside a model with a VehicleSeat), or\n--   * select nothing to create a Part, then drag it into your car model at the exhaust.',
+      character: '--   * Creates a Script in StarterPlayer > StarterCharacterScripts: every character gets the effect.',
+    }[mode] || '--   * Select Part(s) or Attachment(s) first to add the effect to them, or\n--   * select nothing to create a new invisible Part in front of the camera.';
     return `-- Particly effect: ${effect.name}
+-- In Roblox: ${BEHAVIOURS[mode].label}
 -- HOW TO USE: Roblox Studio > View > Command Bar. Paste this whole script and press Enter.
---   * Select Part(s) or Attachment(s) first to add the emitters to them, or
---   * select nothing to create a new invisible Part in front of the camera.
+${how}
 -- Undo with Ctrl+Z.
 
 local EFFECT_NAME = ${lStr(effect.name)}
 local PART_SIZE = Vector3.new(${f(s[0])}, ${f(s[1])}, ${f(s[2])})
-local ADD_BURST_PLAYER = ${burstPlayer ? 'true' : 'false'} -- adds a Script that replays burst emitters
-local BURST_PLAYER_SOURCE = [==[
-${burstPlayerSource(effect)}]==]
+local MODE = ${lStr(mode)}
 
-local EMITTERS = ${emittersTable(effect)}
+local EMITTERS = ${emittersTable(effect, '', Behaviour.startsEnabled(effect))}
+
+-- Behaviour scripts placed next to the emitters
+local SCRIPTS = {
+${scriptRows}
+}
+local CONTROL_SOURCE = ${longStr(Behaviour.CONTROL_SOURCE)}
+local CHARACTER_SOURCE = ${character ? longStr(Behaviour.characterSource(effect)) : 'nil'}
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Selection = game:GetService("Selection")
 
 ${APPLY_FN}
 
-local function build(parent)
+local function addEmitters(parent)
 	for _, def in ipairs(EMITTERS) do
 		local emitter = Instance.new("ParticleEmitter")
 		emitter.Name = def.Name
@@ -255,11 +269,23 @@ local function build(parent)
 		end
 		emitter.Parent = holder
 	end
-	if ADD_BURST_PLAYER then
-		local player = Instance.new("Script")
-		player.Name = "ParticlyBurstPlayer"
-		player.Source = BURST_PLAYER_SOURCE
-		player.Parent = parent
+end
+
+local function newScript(class, name, source, parent, runContext)
+	local s = Instance.new(class)
+	s.Name = name
+	s.Source = source
+	if runContext then
+		s.RunContext = Enum.RunContext[runContext]
+	end
+	s.Parent = parent
+	return s
+end
+
+local function build(parent)
+	addEmitters(parent)
+	for _, def in ipairs(SCRIPTS) do
+		newScript(def.Class, def.Name, def.Source, parent, def.RunContext)
 	end
 end
 
@@ -269,30 +295,44 @@ pcall(function()
 end)
 
 local targets = {}
-for _, instance in ipairs(Selection:Get()) do
-	if instance:IsA("BasePart") or instance:IsA("Attachment") then
-		table.insert(targets, instance)
-	end
-end
-
-if #targets == 0 then
-	local camera = workspace.CurrentCamera
-	local part = Instance.new("Part")
-	part.Name = EFFECT_NAME
-	part.Size = PART_SIZE
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.CastShadow = false
-	part.Transparency = 1
-	part.CFrame = CFrame.new(camera.CFrame.Position + camera.CFrame.LookVector * 20)
-	build(part)
-	part.Parent = workspace
-	targets = { part }
+if MODE == "character" then
+	local folder = game:GetService("StarterPlayer"):WaitForChild("StarterCharacterScripts")
+	local main = newScript("Script", "Particly_" .. EFFECT_NAME:gsub("%W", ""), CHARACTER_SOURCE, nil)
+	local templates = Instance.new("Folder")
+	templates.Name = "Emitters"
+	addEmitters(templates)
+	templates.Parent = main
+	newScript("ModuleScript", "ParticlyControl", CONTROL_SOURCE, main)
+	main.Parent = folder
+	targets = { main }
 else
-	for _, target in ipairs(targets) do
-		build(target)
+	for _, instance in ipairs(Selection:Get()) do
+		if instance:IsA("BasePart") or instance:IsA("Attachment") then
+			table.insert(targets, instance)
+		end
+	end
+	if #targets == 0 then
+		local camera = workspace.CurrentCamera
+		local part = Instance.new("Part")
+		part.Name = EFFECT_NAME
+		part.Size = PART_SIZE
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = MODE == "touch"
+		part.CastShadow = false
+		part.Transparency = 1
+		part.CFrame = CFrame.new(camera.CFrame.Position + camera.CFrame.LookVector * 20)
+		if MODE == "vehicle" then
+			part:SetAttribute("ParticlyAutoWeld", 1) -- welds itself to the nearest car part at runtime
+		end
+		build(part)
+		part.Parent = workspace
+		targets = { part }
+	else
+		for _, target in ipairs(targets) do
+			build(target)
+		end
 	end
 end
 
@@ -322,8 +362,12 @@ print(("[Particly] Added %q (%d emitters) to %d object(s)"):format(EFFECT_NAME, 
 	-- One-shot at a world position; cleans itself up afterwards:
 	Effect.playAt(CFrame.new(0, 5, 0), 2)
 
-	-- Stop continuous emitters (existing particles finish naturally):
-	Effect.stop(emitters)
+	-- Turn continuous layers on/off (e.g. nitro while a key is held):
+	Effect.start(emitters)
+	Effect.stop(emitters)   -- existing particles finish naturally
+
+	-- Create switched off, start later:
+	local emitters = Effect.create(somePart, false)
 ]]
 
 local Debris = game:GetService("Debris")
@@ -339,12 +383,15 @@ Effect.Emitters = ${emittersTable(effect)}
 
 ${APPLY_FN}
 
-function Effect.create(parent: Instance): { ParticleEmitter }
+function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 	local created = {}
 	for _, def in ipairs(Effect.Emitters) do
 		local emitter = Instance.new("ParticleEmitter")
 		emitter.Name = def.Name
 		apply(emitter, def.Props)
+		if startOn == false then
+			emitter.Enabled = false
+		end
 		if def.Burst then
 			emitter:SetAttribute("EmitCount", def.Burst.Count)
 			emitter:SetAttribute("EmitDelay", def.Burst.Delay)
@@ -375,6 +422,15 @@ function Effect.burst(emitters: { ParticleEmitter })
 			end
 		end
 	end
+end
+
+function Effect.start(emitters: { ParticleEmitter })
+	for _, emitter in ipairs(emitters) do
+		if not emitter:GetAttribute("EmitCount") then
+			emitter.Enabled = true
+		end
+	end
+	Effect.burst(emitters)
 end
 
 function Effect.stop(emitters: { ParticleEmitter })
@@ -425,5 +481,5 @@ return Effect
     return `${base}#fx=${z ? 'z' : 'r'}${U.bytesToB64url(bytes)}`;
   }
 
-  return { warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, burstPlayerSource, json, libraryJson, shareLink, hasBurst, exportLayers };
+  return { warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, json, libraryJson, shareLink, hasBurst, exportLayers };
 })();

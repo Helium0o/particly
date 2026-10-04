@@ -178,6 +178,7 @@ select.vb { font-size: 13px; background: transparent; border-color: var(--line2)
 .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 6px; overflow: hidden; }
 .seg button { background: none; border: none; padding: 4px 10px; cursor: pointer; color: var(--dim); }
 .seg button.on { background: var(--accent); color: #fff; }
+.behaviour { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px; }
 .layer-head { display: flex; flex-direction: column; gap: 8px; }
 .warn { background: #ffb54718; border: 1px solid #ffb54755; color: #ffd28a; border-radius: 6px; padding: 7px 9px; font-size: 12px; line-height: 1.45; }
 .warn button { margin-top: 6px; }
