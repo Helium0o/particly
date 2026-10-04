@@ -13,6 +13,7 @@ const twinkles = (color) => ({ Name: 'Twinkles', ...T('rbx_sparkles'), Color: co
 function neonPreset(name, desc, underglow, layers, extra = {}) {
   return {
     name, category: 'Car Neon', desc, partSize: CAR_PLATE, ...extra,
+    trigger: { ...(extra.trigger || {}), shop: 'neon' }, // players can recolour neon in the colour shop
     underglow: { enabled: true, brightness: 2, opacity: 1, light: true, lightBrightness: 3, lightRange: 10, ...underglow },
     layers,
   };
@@ -53,6 +54,12 @@ PRESETS.push(
   neonPreset('Neon Spirals', 'Hypnotic magenta spirals, colour cycling.', { design: 'spiral', color: '#ff3cf0', anim: 'rainbow', animSpeed: 0.5 }, [haze('#ff3cf0')]),
   neonPreset('Neon Bubbles', 'Playful teal bubbles.', { design: 'bubbles', color: '#2ad8c8' }, [haze('#2ad8c8')]),
   neonPreset('Neon Paw Prints', 'Pink paw prints.', { design: 'paws', color: '#ff6ad5' }, [haze('#ff6ad5')]),
+  neonPreset('Neon Chasing LEDs', 'LEDs light up one after another, running front to back.', { design: 'led', color: '#00e5ff', anim: 'chase', animSpeed: 1 }, [haze('#00e5ff')]),
+  neonPreset('Neon Knight Scanner', 'A red light sweeping back and forth along the car, like a certain talking car.', { design: 'led', color: '#ff1a1a', anim: 'scanner', animSpeed: 1 }, [haze('#ff1a1a')]),
+  neonPreset('Neon Police Lights', 'Red / blue alternating flashes — press N for the lights.', { design: 'led', color: '#ff1a1a', color2: '#1a5cff', anim: 'police', animSpeed: 1, lightBrightness: 5 }, [haze('#7a4aff')], { trigger: { ...NEON_TOGGLE, buttonText: 'SIREN' } }),
+  neonPreset('Neon Police Bars', 'Red / blue police flashes on solid tubes.', { design: 'bars', color: '#1a5cff', color2: '#ff1a1a', anim: 'police', animSpeed: 0.9, lightBrightness: 5 }, [haze('#7a4aff')], { trigger: { ...NEON_TOGGLE, buttonText: 'SIREN' } }),
+  neonPreset('Neon Two-Tone Fade', 'Twin tubes fading between pink and cyan.', { design: 'double', color: '#ff3cf0', color2: '#00e5ff', anim: 'duo', animSpeed: 1 }, [twinkles('#ffffff')]),
+  neonPreset('Neon Centre Dashes', 'Dashed centre line with lights racing down it.', { design: 'dashes', color: '#39ff6a', anim: 'chase', animSpeed: 1.4 }, [haze('#39ff6a')]),
   neonPreset('Neon Custom Text', 'Your own text along both sides — change it in the Car Neon panel.', { design: 'text', text: 'JDM', color: '#ffffff' }, [haze('#c8d8ff')]),
 );
 

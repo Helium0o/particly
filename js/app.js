@@ -102,7 +102,7 @@ function loadEffect(effect, { fresh = true } = {}) {
     App.view.reset();
     App.view.setEffect(App.effect);
     // Vehicle boosts preview best "driving": switch Drive on for them (and off again for others)
-    const drive = App.effect.trigger.mode === 'vehicle';
+    const drive = App.effect.trigger.mode === 'vehicle' || App.effect.trigger.mode === 'speed';
     if (drive !== App.view.settings.drive) {
       App.view.settings.drive = drive;
       App.view.settings.move = false;
@@ -191,6 +191,16 @@ function renderNeonCard() {
     field('Opacity', '', num('opacity', 0.05, 1, 0.01)),
     field('Animation', 'Animated on each player\'s screen by a small client script', el('div', { class: 'row gap' }, anim)),
   );
+  if (NEON_TWO_COLOUR.includes(u.anim)) {
+    const c2 = el('input', { type: 'color', value: U.rgbToHex(u.color2) });
+    c2.addEventListener('input', () => { u.color2 = U.hexToRgb(c2.value); });
+    c2.addEventListener('change', () => set('color2', U.hexToRgb(c2.value)));
+    const sw2 = el('div', { class: 'seq-tools' }, NEON_SWATCHES.map((h) => el('button', { style: { background: h, width: '18px', height: '16px', padding: 0 }, title: h, onclick: () => set('color2', U.hexToRgb(h)) })));
+    rows.push(field('Colour 2', u.anim === 'police' ? 'Right side / back of the car (colour 1 is the left / front)' : 'Fades between colour 1 and this colour', el('div', { class: 'row gap' }, c2, sw2)));
+  }
+  if (['chase', 'scanner', 'police'].includes(u.anim) && !Neon.isFrameDesign(u.design)) {
+    rows.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Chasing / scanner / police patterns light each LED or tube separately — pick an LED, tube or strip design (an image design blinks as a whole).'));
+  }
   if (u.anim !== 'none') rows.push(field('Speed', '', num('animSpeed', 0.1, 5, 0.05)));
   rows.push(field('Road light', 'SurfaceLight shining down so the road takes the neon colour', el('div', { class: 'row gap' }, light, u.light ? num('lightBrightness', 0, 15, 0.1) : null)));
   if (u.light) rows.push(field('Light range', 'Studs', num('lightRange', 2, 30, 0.5)));
@@ -274,15 +284,35 @@ function behaviourEditor(E) {
     if (!T.toggle) extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
     extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Tip: tick "Drive" in the preview bar to see it streaming behind a moving car. Exhausts emit from the part\'s Back face (+Z).'));
   }
+  const check = (k, label, title) => {
+    const c = el('input', { type: 'checkbox', checked: T[k] });
+    c.addEventListener('change', () => set(k, c.checked));
+    return el('label', { class: 'vt', style: { color: 'var(--text)' }, title }, c, label);
+  };
+  if (T.mode === 'speed') {
+    extra.push(field('Reacts to', 'Car speed: exhaust flames, wind, tyre smoke. Sideways slide: drift smoke and skid marks.', select('measure', Object.keys(SPEED_MEASURES), SPEED_MEASURES)));
+    extra.push(field('Starts at', 'Studs per second where the effect switches on (a typical car does 50–150)', num('minSpeed', 0, 1000, 1)));
+    extra.push(field('Full at', 'Studs per second for full strength. Burst layers fire when this speed is reached (sonic boom).', num('maxSpeed', 1, 2000, 1)));
+    extra.push(field('Grow', 'Particles get bigger with speed too (not just more of them)', check('scaleSize', 'bigger when faster')));
+    extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'The preview car speeds up to top speed and slows down again every 10 s.'));
+  }
+  if (T.mode === 'impact') {
+    extra.push(field('Crash at', 'Sudden speed change in studs/s that counts as a crash (lower = more sensitive)', num('impact', 5, 500, 1)));
+    extra.push(field('Play for (s)', 'How long continuous layers stay on after a crash', num('duration', 0.1, 30, 0.1)));
+    extra.push(field('Cooldown (s)', 'Wait before it can trigger again', num('cooldown', 0, 30, 0.1)));
+  }
   if (T.mode === 'touch' || T.mode === 'prompt') {
     if (T.mode === 'prompt') {
       const t = el('input', { type: 'text', value: T.actionText });
       t.addEventListener('change', () => set('actionText', t.value || 'Activate'));
       extra.push(field('Prompt text', 'Text shown on the ProximityPrompt', t));
     }
-    extra.push(field('Play for (s)', 'How long continuous layers stay on each time', num('duration', 0.1, 30, 0.1)));
+    extra.push(field('Keep on', 'Continuous layers run all the time and each touch / use only fires the burst layers (checkpoint gates, boost pads)', check('keepOn', 'glow always, bursts on use')));
+    if (!T.keepOn) extra.push(field('Play for (s)', 'How long continuous layers stay on each time', num('duration', 0.1, 30, 0.1)));
     extra.push(field('Cooldown (s)', 'Wait before it can trigger again', num('cooldown', 0, 30, 0.1)));
   }
+  extra.push(field('Colour shop', 'Lets players recolour this effect in the in-game colour shop (Export › Colour shop adds the shop to your game)',
+    select('shop', Object.keys(SHOP_SLOTS), Object.fromEntries(Object.entries(SHOP_SLOTS).map(([k, v]) => [k, k === 'none' ? 'Not recolourable' : 'Recolour as ' + v.label])))));
   if (T.mode === 'character') extra.push(field('Attach to', 'Body part the effect follows (HumanoidRootPart works for R6 and R15)', select('attachTo', ATTACH_POINTS)));
   box.append(
     el('div', { class: 'prop' }, el('label', { title: 'What the effect does by itself in your game. The export includes the scripts for it.' }, 'In Roblox'),
@@ -810,7 +840,27 @@ function openExport() {
         el('button', { class: 'btn', onclick: async () => { linkIn.value = await Export.shareLink(E); linkIn.select(); U.copy(linkIn.value); } }, asCode ? 'Create code' : 'Create link')),
     ];
   };
-  modal('Export to Roblox', [warnBox, ...tabbed([['Roblox model (.rbxmx)', modelTab], ['Command Bar', cmdTab], ['ModuleScript', modTab], ['Share / backup', shareTab]])], { width: 760 });
+  const shopTab = () => {
+    const slot = SHOP_SLOTS[E.trigger.shop];
+    const code = Export.shopCommandBar();
+    return [
+      el('p', { class: 'hint', style: { margin: 0 } }, 'Add an in-game colour picker so players choose their own neon / nitro / tyre-smoke / aura colours. Their choice is saved (DataStore) and applied to the car they drive and their character.'),
+      el('div', { class: slot.id ? 'ok-note' : 'warn' }, slot.id
+        ? ['This effect is recoloured as ', el('b', null, slot.label), '.']
+        : 'This effect is not recolourable yet: set Effect › In Roblox › Colour shop, then export it again.'),
+      el('div', { class: 'row gap wrap' },
+        el('button', { class: 'btn primary', onclick: () => { U.download('ParticlyColourShop.rbxmx', Export.shopRbxmx(), 'application/xml'); U.toast('Downloaded ParticlyColourShop.rbxmx'); } }, '⬇ Download colour shop (.rbxmx)'),
+        el('button', { class: 'btn', onclick: () => U.copy(code) }, '⧉ Copy Command Bar installer')),
+      el('h4', null, 'Add it to your game (once)'),
+      el('ol', null,
+        el('li', null, 'Drag ', el('code', null, 'ParticlyColourShop.rbxmx'), ' into Workspace (or paste the installer into the Command Bar).'),
+        el('li', null, 'Export your effects with a Colour shop slot and put them in your cars / characters as usual.'),
+        el('li', null, 'Play: press the ', el('b', null, 'Colours'), ' button, pick a colour, press ', el('b', null, 'Apply'), '. Sit in a car to see it change.'),
+        el('li', null, 'Saving in Studio needs ', el('b', null, 'Game Settings › Security › Enable Studio Access to API Services'), '.')),
+      el('p', { class: 'hint', style: { margin: 0 } }, 'Want to charge for colours? Edit ', el('code', null, 'canChange'), ' at the top of ColourShopServer (e.g. check a game pass).'),
+    ];
+  };
+  modal('Export to Roblox', [warnBox, ...tabbed([['Roblox model (.rbxmx)', modelTab], ['Command Bar', cmdTab], ['ModuleScript', modTab], ['Colour shop', shopTab], ['Share / backup', shareTab]])], { width: 760 });
 }
 
 /* ------------------------------ import ------------------------------ */
@@ -912,11 +962,15 @@ function openHelp() {
     el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › ', el('b', null, 'In Roblox'), ' picks what the exported effect does by itself — the scripts come with the export:'),
     el('ul', null,
       el('li', null, el('b', null, 'Vehicle boost'), ': nitro / exhaust / drift smoke. Drop it into a car model with a VehicleSeat; the driver holds a key (gamepad button and mobile button included) and every player sees it. Tick ', el('b', null, 'Drive'), ' in the preview to see it at speed.'),
-      el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons).'),
+      el('li', null, el('b', null, 'React to car speed / drifting'), ': exhaust flames that grow with speed, wind lines, tyre smoke, skid marks, rim sparks, a sonic boom at top speed — no key needed.'),
+      el('li', null, el('b', null, 'Play on crash'), ': spark showers and debris when the car suddenly stops or hits something.'),
+      el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons). Tick ', el('b', null, 'Keep on'), ' for gates and boost pads that glow all the time and burst when used.'),
       el('li', null, el('b', null, 'Attach to every character'), ': auras, trails, footstep dust.'),
       el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
     el('h4', null, 'Car neon (underglow)'),
-    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload.'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload. Animations include chasing LEDs, a scanner sweep and two-colour police flashes.'),
+    el('h4', null, 'Colour shop'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Set Effect › In Roblox › Colour shop on neon, nitro, tyre smoke or aura effects, then add the shop from Export › Colour shop. Players get a colour picker; their choice is saved and applied to the car they drive.'),
     el('h4', null, 'Textures'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),
@@ -1013,7 +1067,9 @@ function startLoop() {
     frames++; acc += dt;
     if (acc >= 0.5) {
       const n = App.view.sim.count();
-      stats.textContent = `${n.toLocaleString()} particles · ${Math.round(frames / acc)} fps${n > 3000 ? ' · heavy for mobile' : ''}`;
+      const sp = App.effect && App.view.sim.speedState(App.effect);
+      const car = sp ? ` · car ${Math.round(sp.speed)} studs/s${App.effect.trigger.measure === 'drift' ? ' sliding' : ''}` : '';
+      stats.textContent = `${n.toLocaleString()} particles · ${Math.round(frames / acc)} fps${car}${n > 3000 ? ' · heavy for mobile' : ''}`;
       frames = 0; acc = 0;
     }
     requestAnimationFrame(loop);

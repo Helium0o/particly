@@ -769,6 +769,8 @@ const Model = {
 const BEHAVIOURS = {
   always: { label: 'Always on', help: 'Continuous layers run all the time; burst layers replay every "Burst replay" seconds.' },
   vehicle: { label: 'Vehicle boost (hold key while driving)', help: 'For nitro / exhaust / afterburners. Put the effect inside a car model that has a VehicleSeat. The driver holds the key (or the on-screen BOOST button on mobile) and everyone sees it.' },
+  speed: { label: 'React to car speed / drifting', help: 'Grows with the car\'s speed — or with how fast it slides sideways (drift): exhaust flames, wind lines, tyre smoke, skid marks, rim sparks. Burst layers fire when the car hits top speed (sonic boom). Put the effect inside a car model.' },
+  impact: { label: 'Play on crash / hard impact', help: 'Plays when the car suddenly changes speed — a crash, a wall hit or a hard landing (spark showers, debris, smoke). Put it inside a car model, or on any unanchored part.' },
   touch: { label: 'Play when touched', help: 'Plays when a player — or a car someone is driving — touches the part (pickups, boost pads, puddles, traps, checkpoints).' },
   prompt: { label: 'Play from a ProximityPrompt', help: 'Shows an interaction prompt ("Press E"); plays when used (chests, buttons, shrines).' },
   character: { label: 'Attach to every player\'s character', help: 'Auras, trails and footstep dust. Export goes into StarterPlayer › StarterCharacterScripts.' },
@@ -777,7 +779,13 @@ const BEHAVIOURS = {
 const BOOST_KEYS = ['LeftShift', 'RightShift', 'LeftControl', 'Q', 'E', 'F', 'R', 'B', 'N', 'X', 'Z', 'Space'];
 const ATTACH_POINTS = ['HumanoidRootPart', 'Head', 'UpperTorso', 'LowerTorso'];
 
-const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
+const TRIGGER_DEFAULTS = {
+  mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart',
+  measure: 'speed', minSpeed: 10, maxSpeed: 120, scaleSize: true, impact: 45, keepOn: false, shop: 'none',
+};
+/** Colour-shop slots: players recolour every effect tagged with a slot (see Shop in shop.js). */
+const SHOP_SLOTS = { none: { id: 0, label: 'No' }, neon: { id: 1, label: 'Neon / underglow' }, boost: { id: 2, label: 'Nitro / boost' }, smoke: { id: 3, label: 'Tyre smoke' }, aura: { id: 4, label: 'Aura / trail' } };
+const SPEED_MEASURES = { speed: 'Car speed', drift: 'Sideways slide (drift)' };
 /** Gamepad button paired with each keyboard key (so different effects don't share one button). */
 const GAMEPAD_FOR_KEY = { LeftShift: 'ButtonR1', RightShift: 'ButtonR1', Space: 'ButtonR1', LeftControl: 'ButtonL1', Q: 'ButtonL1', E: 'ButtonY', R: 'ButtonY', F: 'ButtonX', X: 'ButtonX', B: 'ButtonB', N: 'DPadUp', Z: 'DPadDown' };
 
@@ -799,6 +807,13 @@ const Behaviour = (() => {
       cooldown: num(t.cooldown, d.cooldown, 0, 600),
       actionText: String(t.actionText || d.actionText).slice(0, 40),
       attachTo: ATTACH_POINTS.includes(t.attachTo) ? t.attachTo : d.attachTo,
+      measure: SPEED_MEASURES[t.measure] ? t.measure : d.measure,
+      minSpeed: num(t.minSpeed, d.minSpeed, 0, 2000),
+      maxSpeed: num(t.maxSpeed, d.maxSpeed, 1, 4000),
+      scaleSize: t.scaleSize === undefined ? d.scaleSize : !!t.scaleSize,
+      impact: num(t.impact, d.impact, 5, 1000),
+      keepOn: !!t.keepOn,
+      shop: SHOP_SLOTS[t.shop] ? t.shop : d.shop,
     };
   }
 
@@ -808,11 +823,17 @@ const Behaviour = (() => {
 
   const hasBurst = (effect) => effect.layers.some((l) => !l.hidden && l.mode === 'burst');
   /** Continuous emitters start enabled only for "always" (and inside character templates). */
-  const startsEnabled = (effect) => effect.trigger.mode === 'always' || effect.trigger.mode === 'character';
+  const startsEnabled = (effect) => {
+    const m = effect.trigger.mode;
+    return m === 'always' || m === 'character' || ((m === 'touch' || m === 'prompt') && effect.trigger.keepOn);
+  };
+  /** Behaviours whose effect Part welds itself into the car it is dropped into. */
+  const autoWelds = (effect) => ['vehicle', 'speed', 'impact'].includes(effect.trigger.mode);
+  const shopSlot = (effect) => SHOP_SLOTS[effect.trigger.shop].id;
   /** Does the container need a ParticlyTrigger script? */
   const needsTrigger = (effect) => {
     const m = effect.trigger.mode;
-    return m === 'touch' || m === 'prompt' || m === 'vehicle' || (m === 'always' && hasBurst(effect));
+    return m === 'touch' || m === 'prompt' || m === 'vehicle' || m === 'speed' || m === 'impact' || (m === 'always' && hasBurst(effect));
   };
 
   const CONTROL_SOURCE = `--[[
@@ -938,6 +959,43 @@ return default
 	return nil, nil
 end`;
 
+  /** Welds an anchored Particly effect Part (dropped into a car) to the nearest car part. */
+  const AUTO_WELD = `local function autoWeld(vehicle)
+	local holder = script.Parent
+	if not (holder:IsA("BasePart") and holder:GetAttribute("ParticlyAutoWeld") == 1 and holder.Anchored) then
+		return
+	end
+	local nearest, nearestDistance = nil, math.huge
+	for _, item in ipairs(vehicle:GetDescendants()) do
+		if item:IsA("BasePart") and item ~= holder then
+			local distance = (item.Position - holder.Position).Magnitude
+			if distance < nearestDistance then
+				nearest, nearestDistance = item, distance
+			end
+		end
+	end
+	if nearest then
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = nearest
+		weld.Part1 = holder
+		weld.Parent = holder
+		holder.Massless = true
+		holder.Anchored = false
+	end
+end`;
+
+  /** The part whose velocity a speed / impact effect reads: the car's seat, else the effect's own part. */
+  const BODY = `local function findBody(seat)
+	if seat then
+		return seat
+	end
+	local holder = script.Parent
+	if holder:IsA("BasePart") then
+		return holder
+	end
+	return holder:FindFirstAncestorWhichIsA("BasePart")
+end`;
+
   function alwaysSource(effect) {
     return `${marker(effect)}
 -- Particly: keeps this effect running and replays its burst layers.
@@ -958,6 +1016,7 @@ end
 -- Particly: plays this effect when a player touches the part.
 local DURATION = ${f(t.duration)} -- seconds the effect stays on
 local COOLDOWN = ${f(t.cooldown)} -- seconds before it can trigger again
+local KEEP_ON = ${t.keepOn ? 'true' : 'false'} -- true: continuous layers always run, a touch only fires the bursts
 
 local Players = game:GetService("Players")
 local control = require(script.Parent:WaitForChild("ParticlyControl"))
@@ -992,7 +1051,11 @@ local ready = true
 part.Touched:Connect(function(hit)
 	if ready and byPlayer(hit) then
 		ready = false
-		control.play(DURATION)
+		if KEEP_ON then
+			control.burst()
+		else
+			control.play(DURATION)
+		end
 		task.wait(math.max(COOLDOWN, 0.1))
 		ready = true
 	end
@@ -1007,6 +1070,7 @@ end)
 local ACTION_TEXT = ${lStr(t.actionText)}
 local DURATION = ${f(t.duration)} -- seconds the effect stays on
 local COOLDOWN = ${f(t.cooldown)} -- seconds before it can be used again
+local KEEP_ON = ${t.keepOn ? 'true' : 'false'} -- true: continuous layers always run, the prompt only fires the bursts
 
 local control = require(script.Parent:WaitForChild("ParticlyControl"))
 
@@ -1019,7 +1083,11 @@ prompt.Parent = script.Parent
 
 prompt.Triggered:Connect(function()
 	prompt.Enabled = false
-	control.play(DURATION)
+	if KEEP_ON then
+		control.burst()
+	else
+		control.play(DURATION)
+	end
 	task.wait(math.max(COOLDOWN, 0.1))
 	prompt.Enabled = true
 end)
@@ -1045,26 +1113,8 @@ if not seat then
 end
 
 -- A Particly effect Part dropped into the car welds itself to the nearest car part.
-local holder = script.Parent
-if holder:IsA("BasePart") and holder:GetAttribute("ParticlyAutoWeld") == 1 and holder.Anchored then
-	local nearest, nearestDistance = nil, math.huge
-	for _, item in ipairs(vehicle:GetDescendants()) do
-		if item:IsA("BasePart") and item ~= holder then
-			local distance = (item.Position - holder.Position).Magnitude
-			if distance < nearestDistance then
-				nearest, nearestDistance = item, distance
-			end
-		end
-	end
-	if nearest then
-		local weld = Instance.new("WeldConstraint")
-		weld.Part0 = nearest
-		weld.Part1 = holder
-		weld.Parent = holder
-		holder.Massless = true
-		holder.Anchored = false
-	end
-end
+${AUTO_WELD}
+autoWeld(vehicle)
 
 local remote = Instance.new("RemoteEvent")
 remote.Name = "ParticlyBoostRemote"
@@ -1201,6 +1251,177 @@ refresh()
 `;
   }
 
+  function speedServerSource(effect) {
+    return `${marker(effect)}
+-- Particly speed effect (server part): welds the effect into the car. The client script
+-- ParticlySpeedFx next to this one makes the particles react to the car's speed.
+
+${FIND_SEAT}
+
+${AUTO_WELD}
+
+local vehicle = findVehicle()
+if vehicle then
+	autoWeld(vehicle)
+end
+`;
+  }
+
+  function speedClientSource(effect) {
+    const t = effect.trigger;
+    return `${marker(effect)}
+-- Particly speed effect (client, RunContext = Client). Every player's game scales the
+-- particles with the car's speed, so it looks smooth and costs no network traffic.
+local MEASURE = ${lStr(t.measure)} -- "speed": how fast the car moves · "drift": how fast it slides sideways
+local MIN_SPEED = ${f(t.minSpeed)} -- studs/s where the effect switches on
+local MAX_SPEED = ${f(t.maxSpeed)} -- studs/s for full strength (burst layers fire when this is reached)
+local SCALE_SIZE = ${t.scaleSize ? 'true' : 'false'} -- particles also grow with speed
+
+local RunService = game:GetService("RunService")
+
+${FIND_SEAT}
+
+${BODY}
+
+local _, seat = findVehicle()
+local body = findBody(seat)
+if not body then
+	warn("[Particly] Speed effect must be inside a car model or a Part")
+	return
+end
+
+local layers, bursts, neon = {}, {}, {}
+local level = -1 -- 0 = off, 1..20 = strength steps (properties only change when the step does)
+local function collect(item)
+	if item:IsA("ParticleEmitter") then
+		if item:GetAttribute("EmitCount") then
+			table.insert(bursts, item)
+		else
+			table.insert(layers, { emitter = item, rate = item.Rate, size = item.Size })
+			item.Enabled = false
+			level = -1 -- re-apply the current strength
+		end
+	elseif item:GetAttribute("ParticlyNeon") then
+		table.insert(neon, item)
+		level = -1
+	end
+end
+for _, item in ipairs(script.Parent:GetDescendants()) do
+	collect(item)
+end
+script.Parent.DescendantAdded:Connect(collect) -- parts streamed in later (StreamingEnabled)
+
+local function scaled(sequence, k)
+	local points = {}
+	for _, point in ipairs(sequence.Keypoints) do
+		table.insert(points, NumberSequenceKeypoint.new(point.Time, point.Value * k, point.Envelope * k))
+	end
+	return NumberSequence.new(points)
+end
+
+local function burst()
+	for _, emitter in ipairs(bursts) do
+		local delay = emitter:GetAttribute("EmitDelay") or 0
+		if delay > 0 then
+			task.delay(delay, function()
+				emitter:Emit(emitter:GetAttribute("EmitCount"))
+			end)
+		else
+			emitter:Emit(emitter:GetAttribute("EmitCount"))
+		end
+	end
+end
+
+local atTop = false
+RunService.Heartbeat:Connect(function()
+	local velocity = body.AssemblyLinearVelocity
+	local amount = if MEASURE == "drift" then math.abs(velocity:Dot(body.CFrame.RightVector)) else velocity.Magnitude
+	local strength = math.clamp((amount - MIN_SPEED) / math.max(MAX_SPEED - MIN_SPEED, 1), 0, 1)
+	local step = if amount < MIN_SPEED then 0 else math.max(1, math.floor(strength * 20 + 0.5))
+	if step ~= level then
+		level = step
+		local k = step / 20
+		for _, layer in ipairs(layers) do
+			layer.emitter.Enabled = step > 0
+			if step > 0 then
+				layer.emitter.Rate = layer.rate * (0.15 + 0.85 * k)
+				if SCALE_SIZE then
+					layer.emitter.Size = scaled(layer.size, 0.4 + 0.6 * k)
+				end
+			end
+		end
+		for _, item in ipairs(neon) do
+			item.Enabled = step > 0
+		end
+	end
+	if strength >= 1 and not atTop then
+		atTop = true
+		burst()
+	elseif strength < 0.85 then
+		atTop = false
+	end
+end)
+`;
+  }
+
+  function impactSource(effect) {
+    const t = effect.trigger;
+    return `${marker(effect)}
+-- Particly crash effect (server): plays when the car suddenly changes speed —
+-- a crash, a wall hit or a hard landing.
+local IMPACT_SPEED = ${f(t.impact)} -- studs/s of sudden speed change (within 0.15 s) that counts as a crash
+local DURATION = ${f(t.duration)} -- seconds continuous layers stay on
+local COOLDOWN = ${f(t.cooldown)} -- seconds before it can trigger again
+
+local RunService = game:GetService("RunService")
+local control = require(script.Parent:WaitForChild("ParticlyControl"))
+
+${FIND_SEAT}
+
+${AUTO_WELD}
+
+${BODY}
+
+local vehicle, seat = findVehicle()
+if vehicle then
+	autoWeld(vehicle)
+end
+local body = findBody(seat)
+if not body then
+	warn("[Particly] Crash effect must be inside a car model or a Part")
+	return
+end
+
+-- Compare the velocity with a reference sample refreshed every 0.15 s
+local refTime, refVelocity = 0, nil
+local ready = true
+RunService.Heartbeat:Connect(function()
+	if seat and not seat.Occupant then
+		refVelocity = nil -- parked: nothing to check
+		return
+	end
+	local now = os.clock()
+	local velocity = body.AssemblyLinearVelocity
+	if not refVelocity then
+		refTime, refVelocity = now, velocity
+		return
+	end
+	local change = (velocity - refVelocity).Magnitude
+	if now - refTime >= 0.15 then
+		refTime, refVelocity = now, velocity
+	end
+	if ready and change >= IMPACT_SPEED then
+		ready = false
+		refTime, refVelocity = now, velocity
+		control.play(DURATION)
+		task.delay(math.max(COOLDOWN, 0.1), function()
+			ready = true
+		end)
+	end
+end)
+`;
+  }
+
   function characterSource(effect) {
     const t = effect.trigger;
     return `${marker(effect)}
@@ -1266,6 +1487,11 @@ end
       list.push({ cls: 'Script', name: 'ParticlyTrigger', source: vehicleServerSource(effect) });
       list.push({ cls: 'Script', name: 'ParticlyBoostClient', source: vehicleClientSource(effect), runContext: 'Client' });
     }
+    if (m === 'speed') {
+      list.push({ cls: 'Script', name: 'ParticlyTrigger', source: speedServerSource(effect) });
+      list.push({ cls: 'Script', name: 'ParticlySpeedFx', source: speedClientSource(effect), runContext: 'Client' });
+    }
+    if (m === 'impact') list.push({ cls: 'Script', name: 'ParticlyTrigger', source: impactSource(effect) });
     return list;
   }
 
@@ -1280,15 +1506,24 @@ end
         `Play: sit in the driver seat and ${t.toggle ? 'press' : 'hold'} ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button)${t.toggle ? ' to switch it on/off' : ''}.`,
         ...(effect.underglow && effect.underglow.enabled ? ['Car neon: put the Part flat under the car (X = car width, Z = car length), just above the road. The glow is on its Top face and a light shines down onto the road.'] : []),
       ];
-      case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
-      case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];
+      case 'speed': return [
+        'Drag the .rbxmx into your car model (the model that contains the VehicleSeat) and move the Part where the effect belongs: exhaust, wheel, roof, bumper… It welds itself to the nearest car part.',
+        t.measure === 'drift' ? `It shows while the car slides sideways faster than ${U.fmt(t.minSpeed)} studs/s and is strongest at ${U.fmt(t.maxSpeed)}.` : `It switches on above ${U.fmt(t.minSpeed)} studs/s and is strongest at ${U.fmt(t.maxSpeed)} studs/s${hasBurst(effect) ? ' — burst layers fire when that top speed is reached' : ''}.`,
+        'Wheel effects: put the Part on the wheel itself so it spins with it (rim sparks fling off the tyre).',
+      ];
+      case 'impact': return [
+        'Drag the .rbxmx into your car model and move the Part to the front bumper (or wherever sparks should fly). It welds itself to the car.',
+        `A sudden speed change of ${U.fmt(t.impact)} studs/s plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s). Lower the number for more sensitive crashes.`,
+      ];
+      case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', t.keepOn ? `It glows all the time; each touch fires the burst layers (cooldown ${U.fmt(t.cooldown)}s).` : `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
+      case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', t.keepOn ? `It runs all the time; "${t.actionText}" fires the burst layers.` : `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];
       case 'character': return ['Drag the .rbxmx onto StarterPlayer › StarterCharacterScripts in the Explorer.', `Press Play: every character gets the effect on its ${t.attachTo}. Server scripts can set character.${U.safeName(effect.name)}Control.Value = false to hide it.`];
       case 'script': return ['Drag the .rbxmx into Workspace (or put the Part where you need it).', 'From a server Script: require(part.ParticlyControl).play(2) — or .start(), .stop(), .burst().'];
       default: return ['Drag the .rbxmx into the Studio 3D view — or right-click Workspace › Insert from File…', 'Move/resize the invisible Part where you want the effect.'];
     }
   }
 
-  return { normalize, containerScripts, characterSource, CONTROL_SOURCE, startsEnabled, needsTrigger, hasBurst, instructions, marker };
+  return { normalize, containerScripts, characterSource, CONTROL_SOURCE, startsEnabled, needsTrigger, hasBurst, instructions, marker, autoWelds, shopSlot };
 })();
 </script>
 <script>
@@ -1626,7 +1861,149 @@ const TexGen = (() => {
     };
   }
 
-  return { flameJet, shard, droplet, debris, cloud, hexagon, spiral, beam, feather, glyph, glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
+  /* ---------- pixel art (crisp blocks: draws the same at any resolution) ---------- */
+  // '#' = solid, '+' = 60 % (shading), '.' = empty
+  function pixelArt(rows) {
+    return (ctx, S) => {
+      ctx.clearRect(0, 0, S, S);
+      const n = Math.max(rows.length, ...rows.map((r) => r.length)) + 2, c = S / n; // 1 empty cell of padding
+      const oy = (n - rows.length) / 2, ox = (n - Math.max(...rows.map((r) => r.length))) / 2;
+      rows.forEach((row, y) => [...row].forEach((ch, x) => {
+        if (ch === '.' || ch === ' ') return;
+        ctx.fillStyle = ch === '+' ? 'rgba(255,255,255,0.6)' : '#fff';
+        ctx.fillRect(Math.floor((x + ox) * c), Math.floor((y + oy) * c), Math.ceil(c), Math.ceil(c));
+      }));
+    };
+  }
+  /** Bold outlined text (race signs, countdown numbers). */
+  function text(lines, scale = 0.5) {
+    return (ctx, S) => {
+      ctx.clearRect(0, 0, S, S);
+      const ls = String(lines).split('\n');
+      const size = Math.round(S * scale / Math.max(1, ls.length * 0.8));
+      ctx.font = `900 ${size}px "Arial Black", Impact, "Segoe UI", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ls.forEach((l, i) => {
+        const y = S / 2 + (i - (ls.length - 1) / 2) * size * 1.05;
+        ctx.lineWidth = size * 0.16; ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.strokeText(l, S / 2, y, S * 0.94);
+        ctx.fillStyle = '#fff'; ctx.fillText(l, S / 2, y, S * 0.94);
+      });
+    };
+  }
+  function shape(draw) {
+    return (ctx, S) => { ctx.clearRect(0, 0, S, S); ctx.save(); ctx.fillStyle = ctx.strokeStyle = '#fff'; draw(ctx, S); ctx.restore(); };
+  }
+  const poly = (ctx, pts, S) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * S, y * S) : ctx.moveTo(x * S, y * S))); ctx.closePath(); };
+
+  // comic "POW" star burst
+  const pow = shape((ctx, S) => {
+    const pts = [];
+    for (let i = 0; i < 24; i++) { const r = i % 2 ? 0.28 : 0.47 + (i % 4 === 0 ? 0.02 : -0.04), a = i * Math.PI / 12; pts.push([0.5 + Math.cos(a) * r, 0.5 + Math.sin(a) * r]); }
+    poly(ctx, pts, S); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = S * 0.03; poly(ctx, pts.map(([x, y]) => [0.5 + (x - 0.5) * 0.8, 0.5 + (y - 0.5) * 0.8]), S); ctx.stroke();
+  });
+  // anime anger mark: four curved brackets
+  const anger = shape((ctx, S) => {
+    ctx.lineWidth = S * 0.09; ctx.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+      ctx.save(); ctx.translate(S / 2, S / 2); ctx.rotate(i * Math.PI / 2);
+      ctx.beginPath(); ctx.moveTo(S * 0.08, -S * 0.36); ctx.quadraticCurveTo(S * 0.1, -S * 0.1, S * 0.36, -S * 0.08); ctx.stroke();
+      ctx.restore();
+    }
+  });
+  // manga impact frame: radial speed lines around an empty centre
+  const impactLines = shape((ctx, S) => {
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2 + Math.sin(i * 12.9898) * 0.05, w = 0.012 + (Math.sin(i * 78.233) * 0.5 + 0.5) * 0.02, r0 = 0.22 + (Math.sin(i * 3.7) * 0.5 + 0.5) * 0.12;
+      poly(ctx, [[0.5 + Math.cos(a - w) * 0.5, 0.5 + Math.sin(a - w) * 0.5], [0.5 + Math.cos(a) * r0, 0.5 + Math.sin(a) * r0], [0.5 + Math.cos(a + w) * 0.5, 0.5 + Math.sin(a + w) * 0.5]], S);
+      ctx.fill();
+    }
+  });
+  function ripple(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const r = radial(u, v);
+      const a = 1 - smooth(0.02, 0.06, Math.abs(r - 0.84)), b = 0.55 * (1 - smooth(0.015, 0.05, Math.abs(r - 0.62)));
+      return W(Math.max(a, b) * (1 - smooth(0.9, 1, r)));
+    });
+  }
+  const splash = shape((ctx, S) => {
+    // crown splash: jagged rim with droplets thrown up
+    ctx.beginPath(); ctx.moveTo(0.08 * S, 0.9 * S);
+    for (let i = 0; i <= 8; i++) { const x = 0.08 + i * 0.105; ctx.lineTo((x - 0.03) * S, (0.72 - (i % 2 ? 0 : 0.2 + Math.abs(4 - i) * -0.02)) * S); ctx.lineTo((x + 0.02) * S, 0.74 * S); }
+    ctx.lineTo(0.92 * S, 0.9 * S); ctx.closePath(); ctx.fill();
+    for (const [x, y, r] of [[0.2, 0.3, 0.035], [0.4, 0.2, 0.04], [0.62, 0.24, 0.035], [0.8, 0.34, 0.03], [0.5, 0.4, 0.025]]) { ctx.beginPath(); ctx.arc(x * S, y * S, r * S, 0, Math.PI * 2); ctx.fill(); }
+  });
+  const foam = shape((ctx, S) => {
+    for (let i = 0; i < 26; i++) {
+      const a = i * 2.39996, r = Math.sqrt(i / 26) * 0.36, br = 0.05 + (Math.sin(i * 4.1) * 0.5 + 0.5) * 0.06;
+      ctx.globalAlpha = 0.65 + 0.35 * Math.sin(i * 1.7) ** 2;
+      ctx.beginPath(); ctx.arc((0.5 + Math.cos(a) * r) * S, (0.5 + Math.sin(a) * r) * S, br * S, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  const pumpkin = shape((ctx, S) => {
+    for (const [dx, rx] of [[-0.17, 0.2], [0.17, 0.2], [0, 0.22]]) { ctx.beginPath(); ctx.ellipse((0.5 + dx) * S, 0.56 * S, rx * S, 0.3 * S, 0, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillRect(0.46 * S, 0.14 * S, 0.08 * S, 0.14 * S);
+    ctx.globalCompositeOperation = 'destination-out';
+    poly(ctx, [[0.33, 0.5], [0.4, 0.4], [0.45, 0.5]], S); ctx.fill();
+    poly(ctx, [[0.55, 0.5], [0.6, 0.4], [0.67, 0.5]], S); ctx.fill();
+    poly(ctx, [[0.3, 0.62], [0.38, 0.7], [0.44, 0.64], [0.5, 0.72], [0.56, 0.64], [0.62, 0.7], [0.7, 0.62], [0.64, 0.76], [0.36, 0.76]], S); ctx.fill();
+  });
+  const gift = shape((ctx, S) => {
+    ctx.fillRect(0.18 * S, 0.4 * S, 0.64 * S, 0.5 * S);
+    ctx.fillRect(0.14 * S, 0.3 * S, 0.72 * S, 0.12 * S);
+    ctx.lineWidth = S * 0.06;
+    for (const sx of [-1, 1]) { ctx.beginPath(); ctx.ellipse((0.5 + sx * 0.12) * S, 0.22 * S, 0.12 * S, 0.07 * S, sx * 0.5, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.45;
+    ctx.fillRect(0.45 * S, 0.3 * S, 0.1 * S, 0.6 * S);
+  });
+  const egg = shape((ctx, S) => {
+    ctx.beginPath(); ctx.ellipse(0.5 * S, 0.54 * S, 0.3 * S, 0.4 * S, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.4; ctx.lineWidth = S * 0.05;
+    ctx.beginPath(); for (let i = 0; i <= 6; i++) ctx.lineTo((0.22 + i * 0.093) * S, (i % 2 ? 0.42 : 0.5) * S); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.24 * S, 0.66 * S); ctx.lineTo(0.76 * S, 0.66 * S); ctx.stroke();
+  });
+  const clover = shape((ctx, S) => {
+    for (let i = 0; i < 4; i++) {
+      ctx.save(); ctx.translate(S / 2, S * 0.46); ctx.rotate(i * Math.PI / 2 + Math.PI / 4);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.bezierCurveTo(-S * 0.26, -S * 0.12, -S * 0.12, -S * 0.36, 0, -S * 0.22); ctx.bezierCurveTo(S * 0.12, -S * 0.36, S * 0.26, -S * 0.12, 0, 0); ctx.fill();
+      ctx.restore();
+    }
+    ctx.lineWidth = S * 0.04; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0.5 * S, 0.5 * S); ctx.quadraticCurveTo(0.55 * S, 0.8 * S, 0.66 * S, 0.92 * S); ctx.stroke();
+  });
+  const candy = shape((ctx, S) => {
+    ctx.lineWidth = S * 0.13; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0.56 * S, 0.92 * S); ctx.lineTo(0.56 * S, 0.34 * S); ctx.arc(0.43 * S, 0.34 * S, 0.13 * S, 0, Math.PI, true); ctx.lineTo(0.3 * S, 0.42 * S); ctx.stroke();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.5; ctx.lineWidth = S * 0.035;
+    for (let y = 0.4; y < 0.92; y += 0.11) { ctx.beginPath(); ctx.moveTo(0.48 * S, (y + 0.05) * S); ctx.lineTo(0.64 * S, (y - 0.03) * S); ctx.stroke(); }
+  });
+  const tree = shape((ctx, S) => {
+    poly(ctx, [[0.5, 0.1], [0.72, 0.4], [0.62, 0.4], [0.8, 0.64], [0.68, 0.64], [0.86, 0.84], [0.14, 0.84], [0.32, 0.64], [0.2, 0.64], [0.38, 0.4], [0.28, 0.4]], S); ctx.fill();
+    ctx.fillRect(0.44 * S, 0.84 * S, 0.12 * S, 0.1 * S);
+  });
+  const chevron = shape((ctx, S) => { poly(ctx, [[0.12, 0.66], [0.5, 0.2], [0.88, 0.66], [0.88, 0.84], [0.5, 0.4], [0.12, 0.84]], S); ctx.fill(); });
+  const checker = shape((ctx, S) => {
+    const n = 6, c = S * 0.84 / n;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { ctx.globalAlpha = (x + y) % 2 ? 0.22 : 1; ctx.fillRect(S * 0.08 + x * c, S * 0.08 + y * c, c, c); }
+  });
+  function skid(ctx, S) {
+    // tyre track: a dark band with tread blocks (tint it dark grey, use LightEmission 0)
+    pixels(ctx, S, (u, v) => {
+      const band = 1 - smooth(0.32, 0.4, Math.abs(u - 0.5));
+      const tread = ((Math.floor(v * 10) + (u < 0.5 ? 0 : 1)) % 2) ? 1 : 0.7;
+      return W(band * tread * 0.9);
+    });
+  }
+  function windline(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const y = 0.5 + Math.sin(u * Math.PI * 1.5) * 0.08;
+      const line = 1 - smooth(0.006, 0.03, Math.abs(v - y));
+      return W(line * smooth(0, 0.3, u) * (1 - smooth(0.7, 1, u)));
+    });
+  }
+
+  return { pixelArt, text, pow, anger, impactLines, ripple, splash, foam, pumpkin, gift, egg, clover, candy, tree, chevron, checker, skid, windline, flameJet, shard, droplet, debris, cloud, hexagon, spiral, beam, feather, glyph, glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
 })();
 
 const RBX = (n) => 'rbxasset://textures/particles/' + n;
@@ -1680,6 +2057,40 @@ const TEXTURES = [
   { key: 'g_bang', name: 'Exclamation', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('!', 0.85) },
   { key: 'g_dollar', name: 'Dollar', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('$', 0.8) },
   { key: 'g_question', name: 'Question', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('?', 0.85) },
+  // cartoon / anime
+  { key: 'pow', name: 'Comic POW', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pow },
+  { key: 'anger', name: 'Anger Mark', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.anger },
+  { key: 'impact_lines', name: 'Impact Frame', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.impactLines },
+  // water
+  { key: 'ripple', name: 'Ripple', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.ripple },
+  { key: 'splash', name: 'Splash Crown', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.splash },
+  { key: 'foam', name: 'Foam', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.foam },
+  // race / cars
+  { key: 'chevron', name: 'Arrow Chevron', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.chevron },
+  { key: 'checker', name: 'Checkered Flag', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.checker },
+  { key: 'skid', name: 'Skid Mark', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.skid },
+  { key: 'windline', name: 'Wind Line', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.windline },
+  { key: 't_3', name: 'Countdown 3', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('3', 0.8) },
+  { key: 't_2', name: 'Countdown 2', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('2', 0.8) },
+  { key: 't_1', name: 'Countdown 1', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('1', 0.8) },
+  { key: 't_go', name: 'GO!', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('GO!', 0.6) },
+  { key: 't_record', name: 'NEW RECORD', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.text('NEW\nRECORD!', 0.5) },
+  { key: 't_finish', name: 'FINISH', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.text('FINISH', 0.42) },
+  // holidays
+  { key: 'pumpkin', name: 'Pumpkin', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pumpkin },
+  { key: 'gift', name: 'Gift', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.gift },
+  { key: 'egg', name: 'Easter Egg', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.egg },
+  { key: 'clover', name: 'Clover', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.clover },
+  { key: 'candy', name: 'Candy Cane', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.candy },
+  { key: 'tree', name: 'Xmas Tree', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.tree },
+  // retro / pixel
+  { key: 'px_heart', name: 'Pixel Heart', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['.##.##.', '#######', '#######', '.#####.', '..###..', '...#...']) },
+  { key: 'px_star', name: 'Pixel Star', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pixelArt(['...#...', '...#...', '#######', '.#####.', '..###..', '.##.##.', '##...##']) },
+  { key: 'px_coin', name: 'Pixel Coin', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['..###..', '.#+++#.', '#++#++#', '#++#++#', '#++#++#', '.#+++#.', '..###..']) },
+  { key: 'px_spark', name: 'Pixel Sparkle', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pixelArt(['...#...', '...#...', '..+#+..', '###.###', '..+#+..', '...#...', '...#...']) },
+  { key: 'px_puff', name: 'Pixel Puff', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.pixelArt(['..####..', '.######.', '########', '##++####', '#####++#', '.######.', '..####..']) },
+  { key: 'px_flame', name: 'Pixel Flame', group: 'shape', fallback: 'rbx_fire', gen: TexGen.pixelArt(['...#....', '...##...', '..###.#.', '.####.##', '.##++###', '##++++##', '##+++###', '.######.']) },
+  { key: 'px_block', name: 'Pixel Block', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['####', '#++#', '#++#', '####']) },
 ];
 const TEX_BY_KEY = Object.fromEntries(TEXTURES.map((t) => [t.key, t]));
 const TEX_BY_RBX = Object.fromEntries(TEXTURES.filter((t) => t.rbx).map((t) => [t.rbx.toLowerCase(), t]));
@@ -1762,10 +2173,15 @@ const TextureStore = {
 
 const NEON_W = 256, NEON_H = 512;
 
-const NEON_ANIMS = { none: 'Steady', pulse: 'Pulse', breathe: 'Breathe', flicker: 'Flicker', strobe: 'Strobe', rainbow: 'Rainbow cycle' };
+const NEON_ANIMS = {
+  none: 'Steady', pulse: 'Pulse', breathe: 'Breathe', flicker: 'Flicker', strobe: 'Strobe', rainbow: 'Rainbow cycle',
+  chase: 'Chasing LEDs', scanner: 'Scanner sweep', police: 'Police (2 colours)', duo: 'Two-colour fade',
+};
+/** Animations that use the second colour. */
+const NEON_TWO_COLOUR = ['police', 'duo'];
 
 const NEON_DEFAULTS = {
-  enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], brightness: 2, opacity: 1,
+  enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], color2: [1, 0.1, 0.15], brightness: 2, opacity: 1,
   anim: 'none', animSpeed: 1, light: true, lightBrightness: 3, lightRange: 10, imageId: '',
 };
 
@@ -1924,6 +2340,8 @@ const Neon = (() => {
     { key: 'led', name: 'LED Strip', rects: () => [...ledSides(), ...ledEnds()] },
     { key: 'ring', name: 'Glow Ring', rects: glowRing },
     { key: 'sides', name: 'Side Tubes', rects: sideBars },
+    { key: 'strip', name: 'Single Strip', rects: () => [pill(0.3, 0.01, 0.4, 0.98)] },
+    { key: 'dashes', name: 'Dashed Line', rects: () => Array.from({ length: 7 }, (_, i) => pill(0.38, 0.02 + i * 0.14, 0.24, 0.1)) },
     { key: 'double', name: 'Double Tubes', rects: () => [pill(0.04, 0.15, 0.05, 0.7), pill(0.13, 0.22, 0.03, 0.56), pill(0.91, 0.15, 0.05, 0.7), pill(0.84, 0.22, 0.03, 0.56)] },
     { key: 'hearts', name: 'Hearts', emblem: 'heart' },
     { key: 'flames', name: 'Flames', emblem: 'flame' },
@@ -1950,13 +2368,14 @@ const Neon = (() => {
     const d = NEON_DEFAULTS;
     u = u && typeof u === 'object' ? u : {};
     const num = (v, def, min, max) => (isFinite(+v) && v !== null && v !== '' ? U.clamp(+v, min, max) : def);
-    const col = Array.isArray(u.color) && u.color.length === 3 && u.color.every((v) => isFinite(+v)) ? u.color.map((v) => U.clamp(+v, 0, 1))
-      : typeof u.color === 'string' ? U.hexToRgb(u.color) : [...d.color];
+    const colour = (c, def) => (Array.isArray(c) && c.length === 3 && c.every((v) => isFinite(+v)) ? c.map((v) => U.clamp(+v, 0, 1))
+      : typeof c === 'string' ? U.hexToRgb(c) : [...def]);
     return {
       enabled: !!u.enabled,
       design: BY_KEY[u.design] ? u.design : d.design,
       text: String(u.text ?? d.text).slice(0, 14),
-      color: col,
+      color: colour(u.color, d.color),
+      color2: colour(u.color2, d.color2),
       brightness: num(u.brightness, d.brightness, 0, 10),
       opacity: num(u.opacity, d.opacity, 0, 1),
       anim: NEON_ANIMS[u.anim] ? u.anim : d.anim,
@@ -2048,6 +2467,69 @@ const Neon = (() => {
     return c;
   }
 
+  /* ---------------- animation maths (mirrors animateNeon in Luau below) ---------------- */
+  const mod1 = (x) => x - Math.floor(x); // Lua's x % 1 (always 0..1)
+  /** Police colour group: 0 = whole design, 1 = left / front half, 2 = right / back half. */
+  function groupOf(cx, cy) {
+    if (Math.abs(cx - 0.5) < 0.05 && Math.abs(cy - 0.5) < 0.1) return 0;
+    if (cx < 0.45) return 1;
+    if (cx > 0.55) return 2;
+    return cy < 0.5 ? 1 : 2;
+  }
+  const lerp3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  /**
+   * Brightness k (0..1) and colour of one glowing piece centred at (cx, cy) on the plate at
+   * animation time s (seconds x speed). Pieces of icon designs use the plate centre.
+   */
+  function state(anim, s, cx, cy, c1, c2) {
+    let k = 1, col = c1;
+    switch (anim) {
+      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
+      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
+      case 'flicker': k = ((Math.floor(s * 12) * 7919) % 100) < 9 ? 0.3 : 1; break;
+      case 'strobe': k = mod1(s * 4) < 0.5 ? 1 : 0.1; break;
+      case 'rainbow': col = U.hsvToRgb([mod1(s * 0.25), 0.8, 1]); break;
+      case 'duo': col = lerp3(c1, c2, 0.5 + 0.5 * Math.sin(s * 2)); break;
+      case 'chase': k = 0.12 + 0.88 * Math.max(0, 1 - mod1((s * 0.6 - cy) * 2) * 3); break;
+      case 'scanner': k = 0.1 + 0.9 * Math.max(0, 1 - Math.abs(cy - (0.5 - 0.5 * Math.cos(s * 2.4))) * 4); break;
+      case 'police': {
+        const { phaseA, flash } = police(s), g = groupOf(cx, cy);
+        const on = g === 1 ? phaseA : g === 2 ? !phaseA : true;
+        k = on && flash ? 1 : 0.12;
+        col = g === 1 ? c1 : g === 2 ? c2 : phaseA ? c1 : c2;
+        break;
+      }
+    }
+    return { k, col };
+  }
+  function police(s) {
+    const cycle = mod1(s * 1.2);
+    return { phaseA: cycle < 0.5, flash: Math.floor(mod1(cycle * 2) * 6) % 2 === 0 };
+  }
+  /** Road light (SurfaceLight) brightness factor and colour. */
+  function lightState(anim, s, c1, c2) {
+    if (anim === 'police') { const { phaseA, flash } = police(s); return { k: flash ? 1 : 0.15, col: phaseA ? c1 : c2 }; }
+    if (anim === 'chase' || anim === 'scanner') return { k: 1, col: c1 };
+    return state(anim, s, 0.5, 0.5, c1, c2);
+  }
+  /** Per-piece patterns only make sense for frame designs (an image is a single piece). */
+  const isPattern = (u) => ['chase', 'scanner', 'police'].includes(u.anim) && isFrameDesign(u.design);
+
+  /** Coloured canvas of a frame design with every piece lit by its own animation state (preview). */
+  let animCv = null;
+  function animCanvas(u, s) {
+    if (!animCv) { animCv = document.createElement('canvas'); animCv.width = NEON_W / 2; animCv.height = NEON_H / 2; }
+    const W = animCv.width, H = animCv.height, ctx = animCv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    ctx.shadowBlur = W * 0.06;
+    for (const r of rects(u.design)) {
+      const { k, col } = state(u.anim, s, r.x + r.w / 2, r.y + r.h / 2, u.color, u.color2);
+      ctx.fillStyle = ctx.strokeStyle = ctx.shadowColor = U.rgbToHex(col);
+      drawRect(ctx, { ...r, stroke: r.stroke && r.stroke / 2, a: (r.a ?? 1) * k }, W, H);
+    }
+    return animCv;
+  }
+
   /**
    * GUI Frame specs for Roblox (frame designs only), including soft "halo" copies so the
    * hard-edged Frames read as glowing tubes. Pixel units are on the 256x512 SurfaceGui canvas.
@@ -2070,46 +2552,100 @@ const Neon = (() => {
   }
 
   /** Luau: animates a neon SurfaceGui (+ light) on each client. Shared by the script and ModuleScript exports. */
-  const ANIMATE_FN = `local function animateNeon(gui, light, anim, speed)
+  const ANIMATE_FN = `local function animateNeon(gui, light, anim, speed, color2)
 	local RunService = game:GetService("RunService")
+	color2 = color2 or Color3.new(1, 0.1, 0.15)
+	-- centre of a glowing piece on the plate (0..1): used by the chase / scanner / police patterns
+	local function centre(item)
+		local frame = if item:IsA("UIStroke") then item.Parent else item
+		if frame and frame:IsA("GuiObject") then
+			return frame.Position.X.Scale + frame.Size.X.Scale / 2, frame.Position.Y.Scale + frame.Size.Y.Scale / 2
+		end
+		return 0.5, 0.5
+	end
+	-- police colour group: 0 = whole design, 1 = left / front, 2 = right / back
+	local function group(cx, cy)
+		if math.abs(cx - 0.5) < 0.05 and math.abs(cy - 0.5) < 0.1 then
+			return 0
+		elseif cx < 0.45 then
+			return 1
+		elseif cx > 0.55 then
+			return 2
+		end
+		return if cy < 0.5 then 1 else 2
+	end
 	local parts = {}
+	local function add(item, prop, color)
+		local cx, cy = centre(item)
+		table.insert(parts, { item = item, prop = prop, color = color, base = item[prop], cy = cy, group = group(cx, cy) })
+	end
 	for _, item in ipairs(gui:GetDescendants()) do
 		if item:IsA("ImageLabel") then
-			table.insert(parts, { item = item, prop = "ImageTransparency", color = "ImageColor3", base = item.ImageTransparency })
+			add(item, "ImageTransparency", "ImageColor3")
 		elseif item:IsA("UIStroke") then
-			table.insert(parts, { item = item, prop = "Transparency", color = "Color", base = item.Transparency })
+			add(item, "Transparency", "Color")
 		elseif item:IsA("Frame") then
-			table.insert(parts, { item = item, prop = "BackgroundTransparency", color = "BackgroundColor3", base = item.BackgroundTransparency })
+			add(item, "BackgroundTransparency", "BackgroundColor3")
 		end
 	end
-	local lightBase = light and light.Brightness or 0
+	local color1 = if parts[1] then parts[1].item[parts[1].color] else Color3.new(1, 1, 1)
+	local lightBase = if light then light.Brightness else 0
+	local plate = gui.Parent
 	return RunService.RenderStepped:Connect(function()
 		if not gui.Enabled then
 			return
 		end
+		local camera = workspace.CurrentCamera
+		if camera and plate and plate:IsA("BasePart") and (camera.CFrame.Position - plate.Position).Magnitude > 300 then
+			return -- too far away to see: skip the work
+		end
 		local s = os.clock() * speed
+		local c1 = gui:GetAttribute("ParticlyNeonColor") or color1 -- set by the Particly colour shop
 		local k, color = 1, nil
+		local phaseA, flash = true, true
 		if anim == "pulse" then
 			k = 0.5 + 0.5 * math.sin(s * math.pi * 2)
 		elseif anim == "breathe" then
 			k = 0.65 + 0.35 * math.sin(s * 2)
 		elseif anim == "flicker" then
-			k = (math.floor(s * 12) * 7919) % 100 < 9 and 0.3 or 1
+			k = if (math.floor(s * 12) * 7919) % 100 < 9 then 0.3 else 1
 		elseif anim == "strobe" then
-			k = (s * 4) % 1 < 0.5 and 1 or 0.1
+			k = if (s * 4) % 1 < 0.5 then 1 else 0.1
 		elseif anim == "rainbow" then
 			color = Color3.fromHSV((s * 0.25) % 1, 0.8, 1)
+		elseif anim == "duo" then
+			color = c1:Lerp(color2, 0.5 + 0.5 * math.sin(s * 2))
+		elseif anim == "police" then
+			local cycle = (s * 1.2) % 1
+			phaseA = cycle < 0.5
+			flash = math.floor(((cycle * 2) % 1) * 6) % 2 == 0
 		end
+		local sweep = 0.5 - 0.5 * math.cos(s * 2.4)
 		for _, p in ipairs(parts) do
-			p.item[p.prop] = 1 - (1 - p.base) * k
-			if color then
-				p.item[p.color] = color
+			local pk, pc = k, color
+			if anim == "chase" then
+				pk = 0.12 + 0.88 * math.max(0, 1 - (((s * 0.6 - p.cy) * 2) % 1) * 3)
+			elseif anim == "scanner" then
+				pk = 0.1 + 0.9 * math.max(0, 1 - math.abs(p.cy - sweep) * 4)
+			elseif anim == "police" then
+				local on = if p.group == 1 then phaseA elseif p.group == 2 then not phaseA else true
+				pk = if on and flash then 1 else 0.12
+				pc = if p.group == 1 then c1 elseif p.group == 2 then color2 elseif phaseA then c1 else color2
+			end
+			p.item[p.prop] = 1 - (1 - p.base) * pk
+			if pc then
+				p.item[p.color] = pc
 			end
 		end
 		if light then
-			light.Brightness = lightBase * k
-			if color then
-				light.Color = color
+			local lk, lc = k, color
+			if anim == "police" then
+				lk = if flash then 1 else 0.15
+				lc = if phaseA then c1 else color2
+			end
+			light.Brightness = lightBase * lk
+			if lc then
+				light.Color = lc
 			end
 		end
 	end)
@@ -2119,15 +2655,537 @@ end`;
     return `-- Particly car neon animation (RunContext = Client): ${NEON_ANIMS[u.anim]}.
 local ANIM = "${u.anim}"
 local SPEED = ${U.fmt(u.animSpeed)}
+local COLOR2 = Color3.new(${u.color2.map(U.fmt).join(', ')}) -- second colour (police / two-colour fade)
 
 ${ANIMATE_FN}
 
 local gui = script.Parent:WaitForChild("ParticlyNeon")
-animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED)
+animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED, COLOR2)
 `;
   }
 
-  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN };
+  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN, state, lightState, isPattern, animCanvas };
+})();
+</script>
+<script>
+'use strict';
+/*
+ * Particly colour shop: an in-game colour picker that lets players recolour effects tagged
+ * with a colour-shop slot (Effect › In Roblox › Colour shop) and saves their choice.
+ *
+ * Exported as a Folder holding two scripts (drop it into Workspace):
+ *   ColourShopServer  validates requests, saves colours in a DataStore, recolours the car
+ *                     the player drives and their character
+ *   ColourShopClient  (RunContext = Client) the picker UI: hue / saturation / brightness bars
+ */
+
+const Shop = (() => {
+  const slotNames = () => Object.values(SHOP_SLOTS).filter((s) => s.id).map((s) => JSON.stringify(s.label)).join(', ');
+
+  const SERVER_SOURCE = () => `--[[
+	Particly colour shop (server). Players pick their own colours for effects that have a
+	colour-shop slot (Particly › Effect › In Roblox › Colour shop). The choice is saved, and
+	applied to the car a player drives (VehicleSeat) and to their own character.
+
+	Owned cars: give a car model the attribute OwnerUserId (= player.UserId) when you spawn it
+	and only its owner's colours are applied. Cars without it take the driver's colours.
+	Several cars inside one model (e.g. a "Vehicles" model)? Each car is found on its own, or
+	give each car model the attribute ParticlyVehicle = true.
+
+	To test saving in Studio: Game Settings › Security › Enable Studio Access to API Services.
+]]
+local SLOTS = { ${slotNames()} } -- slot ids 1, 2, 3… (match Particly)
+local DATASTORE_NAME = "ParticlyColours"
+local AUTOSAVE_SECONDS = 120
+
+-- Optional: return false to refuse a change (e.g. require a game pass or in-game cash).
+local function canChange(player: Player, slot: number, color: Color3): boolean
+	return true
+end
+
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local remote = ReplicatedStorage:FindFirstChild("ParticlyColourRemote")
+if not remote then
+	remote = Instance.new("RemoteEvent")
+	remote.Name = "ParticlyColourRemote"
+	remote.Parent = ReplicatedStorage
+end
+
+local store = nil
+local storeOk = pcall(function()
+	store = DataStoreService:GetDataStore(DATASTORE_NAME)
+end)
+if not storeOk then
+	warn("[Particly] Colour shop: DataStores are unavailable, colours will not be saved")
+end
+
+local function attributeName(slot: number): string
+	return "ParticlyColour_" .. slot
+end
+
+------------------------------------------------------------------ recolouring
+
+local originals = setmetatable({}, { __mode = "k" }) -- emitter -> its original ColorSequence
+
+-- New hue for a ColorSequence: white-hot cores stay white, coloured parts take the new
+-- colour, and all-grey sequences (smoke) are tinted completely.
+local function tint(sequence: ColorSequence, color: Color3): ColorSequence
+	local hue, saturation, value = color:ToHSV()
+	local maxSaturation = 0
+	for _, point in ipairs(sequence.Keypoints) do
+		local _, s = point.Value:ToHSV()
+		maxSaturation = math.max(maxSaturation, s)
+	end
+	local points = {}
+	for _, point in ipairs(sequence.Keypoints) do
+		local _, s, v = point.Value:ToHSV()
+		local keep = if maxSaturation < 0.15 then 1 else s / maxSaturation
+		table.insert(points, ColorSequenceKeypoint.new(point.Time, Color3.fromHSV(hue, saturation * keep, v * math.max(value, 0.05))))
+	end
+	return ColorSequence.new(points)
+end
+
+local function recolour(item: Instance, color: Color3)
+	if item:IsA("ParticleEmitter") then
+		if not originals[item] then
+			originals[item] = item.Color
+		end
+		item.Color = tint(originals[item], color)
+	elseif item:IsA("SurfaceGui") then
+		item:SetAttribute("ParticlyNeonColor", color) -- read by the neon animation script
+		for _, child in ipairs(item:GetDescendants()) do
+			if child:IsA("Frame") then
+				child.BackgroundColor3 = color
+			elseif child:IsA("UIStroke") then
+				child.Color = color
+			elseif child:IsA("ImageLabel") then
+				child.ImageColor3 = color
+			end
+		end
+	elseif item:IsA("Light") then
+		item.Color = color
+	end
+end
+
+local function recolourTagged(item: Instance, player: Player)
+	local slot = item:GetAttribute("ParticlyShop")
+	if slot then
+		local color = player:GetAttribute(attributeName(slot))
+		if typeof(color) == "Color3" then
+			recolour(item, color)
+		end
+	end
+end
+
+local function recolourIn(root: Instance, player: Player)
+	for _, item in ipairs(root:GetDescendants()) do
+		recolourTagged(item, player)
+	end
+end
+
+local function seatCount(model: Instance): number
+	local n = 0
+	for _, item in ipairs(model:GetDescendants()) do
+		if item:IsA("VehicleSeat") then
+			n += 1
+			if n > 1 then
+				break
+			end
+		end
+	end
+	return n
+end
+
+-- The whole car: the largest model around the seat that holds no other VehicleSeat
+-- (so a map or "Vehicles" model full of cars is never treated as one car)
+local vehicles = setmetatable({}, { __mode = "k" }) -- seat -> car model (cache)
+local function vehicleOf(seat: Instance): Instance?
+	if vehicles[seat] and vehicles[seat].Parent then
+		return vehicles[seat]
+	end
+	local model = seat:FindFirstAncestorWhichIsA("Model")
+	while model and not model:GetAttribute("ParticlyVehicle") do
+		local outer = model:FindFirstAncestorWhichIsA("Model")
+		if not outer or outer == workspace or seatCount(outer) > 1 then
+			break
+		end
+		model = outer
+	end
+	vehicles[seat] = model
+	return model
+end
+
+local function refresh(player: Player)
+	local character = player.Character
+	if not character then
+		return
+	end
+	recolourIn(character, player)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local seat = humanoid and humanoid.SeatPart
+	if seat and seat:IsA("VehicleSeat") then
+		local vehicle = vehicleOf(seat)
+		local owner = vehicle and vehicle:GetAttribute("OwnerUserId")
+		if vehicle and (owner == nil or owner == player.UserId) then
+			recolourIn(vehicle, player)
+		end
+	end
+end
+
+------------------------------------------------------------------ saving
+
+local loaded = {} -- only save players whose colours loaded (never overwrite good data)
+local dirty = {}
+
+-- DataStore call with 3 tries (requests can fail when the service is busy)
+local function try(fn)
+	local ok, result
+	for attempt = 1, 3 do
+		ok, result = pcall(fn)
+		if ok then
+			break
+		end
+		task.wait(attempt * 2)
+	end
+	return ok, result
+end
+
+local function load(player: Player)
+	if not store then
+		return
+	end
+	local ok, data = try(function()
+		return store:GetAsync("player_" .. player.UserId)
+	end)
+	if not player.Parent then
+		return -- left while loading
+	end
+	if not ok then
+		warn("[Particly] Could not load colours for " .. player.Name .. ": " .. tostring(data))
+		return
+	end
+	loaded[player] = true
+	if type(data) ~= "table" then
+		return
+	end
+	for slot = 1, #SLOTS do
+		local hex = data[tostring(slot)]
+		local name = attributeName(slot)
+		if type(hex) == "string" and hex:match("^%x%x%x%x%x%x$") and player:GetAttribute(name) == nil then
+			player:SetAttribute(name, Color3.fromHex(hex))
+		end
+	end
+end
+
+local function save(player: Player)
+	if not (store and loaded[player] and dirty[player]) then
+		return
+	end
+	local data = {}
+	for slot = 1, #SLOTS do
+		local color = player:GetAttribute(attributeName(slot))
+		if typeof(color) == "Color3" then
+			data[tostring(slot)] = color:ToHex()
+		end
+	end
+	dirty[player] = nil
+	local ok, err = try(function()
+		store:SetAsync("player_" .. player.UserId, data, { player.UserId })
+	end)
+	if not ok then
+		dirty[player] = true
+		warn("[Particly] Could not save colours for " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+------------------------------------------------------------------ requests
+
+local lastChange = {}
+remote.OnServerEvent:Connect(function(player, slot, color)
+	if typeof(slot) ~= "number" or slot % 1 ~= 0 or not SLOTS[slot] or typeof(color) ~= "Color3" then
+		return
+	end
+	if color.R ~= color.R or color.G ~= color.G or color.B ~= color.B then
+		return -- NaN
+	end
+	local now = os.clock()
+	if lastChange[player] and now - lastChange[player] < 0.25 then
+		return
+	end
+	lastChange[player] = now
+	color = Color3.new(math.clamp(color.R, 0, 1), math.clamp(color.G, 0, 1), math.clamp(color.B, 0, 1))
+	if not canChange(player, slot, color) then
+		return
+	end
+	player:SetAttribute(attributeName(slot), color)
+	dirty[player] = true
+	refresh(player)
+end)
+
+local function onCharacter(player: Player, character: Model)
+	character.DescendantAdded:Connect(function(item)
+		recolourTagged(item, player) -- effects attached to the character later
+	end)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	if humanoid then
+		humanoid:GetPropertyChangedSignal("SeatPart"):Connect(function()
+			refresh(player)
+		end)
+	end
+	refresh(player)
+end
+
+local function onPlayer(player: Player)
+	player.CharacterAdded:Connect(function(character)
+		onCharacter(player, character)
+	end)
+	if player.Character then
+		task.spawn(onCharacter, player, player.Character)
+	end
+	load(player)
+	refresh(player)
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayer, player)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	save(player)
+	loaded[player] = nil
+	dirty[player] = nil
+	lastChange[player] = nil
+end)
+
+game:BindToClose(function()
+	local pending = 0
+	for _, player in ipairs(Players:GetPlayers()) do
+		pending += 1
+		task.spawn(function()
+			save(player)
+			pending -= 1
+		end)
+	end
+	local started = os.clock()
+	while pending > 0 and os.clock() - started < 25 do
+		task.wait(0.1)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(AUTOSAVE_SECONDS)
+		for _, player in ipairs(Players:GetPlayers()) do
+			task.spawn(save, player)
+		end
+	end
+end)
+`;
+
+  const SWATCHES = ['#3a8dff', '#00e5ff', '#39ff6a', '#ffd23a', '#ff7a1a', '#ff1a1a', '#ff3cf0', '#a040ff', '#ffffff', '#202020'];
+  const lHex = (h) => `Color3.fromHex("${h.slice(1)}")`;
+
+  const CLIENT_SOURCE = () => `--[[
+	Particly colour shop (client, RunContext = Client): the colour picker UI.
+	A "Colours" button opens a panel with hue / saturation / brightness bars, presets and
+	an Apply button. The server (ColourShopServer) checks and saves the choice.
+]]
+local SLOTS = { ${slotNames()} } -- must match the server script
+local SHOW_SLOTS = { 1, 2, 3, 4 } -- remove slots your game does not use
+local BUTTON_TEXT = "Colours"
+local SWATCHES = { ${SWATCHES.map(lHex).join(', ')} }
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local remote = ReplicatedStorage:WaitForChild("ParticlyColourRemote")
+
+local function make(class, props, parent)
+	local item = Instance.new(class)
+	for key, value in pairs(props) do
+		item[key] = value
+	end
+	item.Parent = parent
+	return item
+end
+local function round(item, radius)
+	make("UICorner", { CornerRadius = UDim.new(0, radius or 8) }, item)
+	return item
+end
+
+local DARK = Color3.fromRGB(24, 26, 34)
+local MID = Color3.fromRGB(44, 48, 62)
+local TEXT = Color3.fromRGB(235, 238, 245)
+
+local gui = make("ScreenGui", { Name = "ParticlyColourShop", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, player:WaitForChild("PlayerGui"))
+
+local openButton = round(make("TextButton", {
+	Name = "Open", Text = BUTTON_TEXT, Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = TEXT,
+	BackgroundColor3 = DARK, BackgroundTransparency = 0.15, Size = UDim2.fromOffset(110, 40),
+	AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 16, 1, -90),
+}, gui))
+
+local panel = round(make("Frame", {
+	Name = "Panel", Visible = false, BackgroundColor3 = DARK, Size = UDim2.fromOffset(300, 336),
+	AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+}, gui), 12)
+make("UIStroke", { Color = MID, Thickness = 2 }, panel)
+local scale = make("UIScale", {}, panel)
+local function fit()
+	local camera = workspace.CurrentCamera
+	if camera then
+		scale.Scale = math.min(1, (camera.ViewportSize.Y - 20) / 336, (camera.ViewportSize.X - 20) / 300)
+	end
+end
+
+make("TextLabel", { Text = "Colours", Font = Enum.Font.GothamBold, TextSize = 20, TextColor3 = TEXT, BackgroundTransparency = 1,
+	TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.fromOffset(16, 10), Size = UDim2.fromOffset(200, 28) }, panel)
+local closeButton = round(make("TextButton", { Name = "Close", Text = "X", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = TEXT,
+	BackgroundColor3 = MID, Position = UDim2.new(1, -44, 0, 10), Size = UDim2.fromOffset(30, 30) }, panel))
+
+-- slot tabs
+local slot = SHOW_SLOTS[1]
+local tabs = {}
+local tabWidth = math.floor(268 / #SHOW_SLOTS)
+for i, id in ipairs(SHOW_SLOTS) do
+	tabs[id] = round(make("TextButton", { Name = "Slot" .. id, Text = SLOTS[id], Font = Enum.Font.Gotham, TextSize = 12, TextWrapped = true, TextColor3 = TEXT,
+		BackgroundColor3 = MID, Position = UDim2.fromOffset(16 + (i - 1) * tabWidth, 48), Size = UDim2.fromOffset(tabWidth - 4, 32) }, panel), 6)
+end
+
+-- hue / saturation / brightness bars
+local hue, saturation, value = 0.6, 0.8, 1
+local function bar(y, label)
+	make("TextLabel", { Text = label, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = TEXT, BackgroundTransparency = 1,
+		TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(268, 14) }, panel)
+	local frame = round(make("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), Position = UDim2.fromOffset(16, y + 16), Size = UDim2.fromOffset(268, 22) }, panel), 6)
+	local gradient = make("UIGradient", {}, frame)
+	local knob = round(make("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5), Size = UDim2.fromOffset(8, 28), ZIndex = 2 }, frame), 4)
+	make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = 1.5 }, knob)
+	return { frame = frame, gradient = gradient, knob = knob }
+end
+local bars = { hue = bar(90, "Colour"), saturation = bar(132, "Strength"), value = bar(174, "Brightness") }
+bars.hue.gradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 1, 1)), ColorSequenceKeypoint.new(1 / 6, Color3.fromHSV(1 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(2 / 6, Color3.fromHSV(2 / 6, 1, 1)), ColorSequenceKeypoint.new(3 / 6, Color3.fromHSV(3 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(4 / 6, Color3.fromHSV(4 / 6, 1, 1)), ColorSequenceKeypoint.new(5 / 6, Color3.fromHSV(5 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(1, Color3.fromHSV(1, 1, 1)),
+})
+
+-- presets
+local swatchButtons = {}
+for i, color in ipairs(SWATCHES) do
+	swatchButtons[i] = round(make("TextButton", { Text = "", BackgroundColor3 = color, AutoButtonColor = true,
+		Position = UDim2.fromOffset(16 + (i - 1) * 27, 222), Size = UDim2.fromOffset(23, 23) }, panel), 5)
+end
+
+local preview = round(make("Frame", { Name = "Preview", Position = UDim2.fromOffset(16, 258), Size = UDim2.fromOffset(70, 42) }, panel))
+make("UIStroke", { Color = MID, Thickness = 2 }, preview)
+local applyButton = round(make("TextButton", { Name = "Apply", Text = "Apply", Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = Color3.new(1, 1, 1),
+	BackgroundColor3 = Color3.fromRGB(46, 120, 255), Position = UDim2.fromOffset(98, 258), Size = UDim2.fromOffset(186, 42) }, panel))
+local status = make("TextLabel", { Name = "Status", Text = "", Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(150, 230, 160),
+	BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 306), Size = UDim2.fromOffset(268, 20) }, panel)
+
+local function update()
+	local color = Color3.fromHSV(hue, saturation, value)
+	preview.BackgroundColor3 = color
+	bars.saturation.gradient.Color = ColorSequence.new(Color3.fromHSV(hue, 0, value), Color3.fromHSV(hue, 1, value))
+	bars.value.gradient.Color = ColorSequence.new(Color3.new(0, 0, 0), Color3.fromHSV(hue, saturation, 1))
+	bars.hue.knob.Position = UDim2.fromScale(hue, 0.5)
+	bars.saturation.knob.Position = UDim2.fromScale(saturation, 0.5)
+	bars.value.knob.Position = UDim2.fromScale(value, 0.5)
+	for id, tab in pairs(tabs) do
+		tab.BackgroundColor3 = if id == slot then Color3.fromRGB(46, 120, 255) else MID
+	end
+end
+
+local function selectSlot(id)
+	slot = id
+	local saved = player:GetAttribute("ParticlyColour_" .. id)
+	if typeof(saved) == "Color3" then
+		hue, saturation, value = saved:ToHSV()
+	end
+	status.Text = ""
+	update()
+end
+for id, tab in pairs(tabs) do
+	tab.Activated:Connect(function()
+		selectSlot(id)
+	end)
+end
+for i, button in ipairs(swatchButtons) do
+	button.Activated:Connect(function()
+		hue, saturation, value = SWATCHES[i]:ToHSV()
+		update()
+	end)
+end
+
+local dragging = nil
+local function setFromX(name, x)
+	local frame = bars[name].frame
+	local t = math.clamp((x - frame.AbsolutePosition.X) / math.max(frame.AbsoluteSize.X, 1), 0, 1)
+	if name == "hue" then
+		hue = t
+	elseif name == "saturation" then
+		saturation = t
+	else
+		value = t
+	end
+	update()
+end
+local function isPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+end
+for name, b in pairs(bars) do
+	b.frame.InputBegan:Connect(function(input)
+		if isPress(input) then
+			dragging = name
+			setFromX(name, input.Position.X)
+		end
+	end)
+end
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		setFromX(dragging, input.Position.X)
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if isPress(input) then
+		dragging = nil
+	end
+end)
+
+applyButton.Activated:Connect(function()
+	remote:FireServer(slot, Color3.fromHSV(hue, saturation, value))
+	status.Text = "Saving…"
+end)
+for _, id in ipairs(SHOW_SLOTS) do
+	player:GetAttributeChangedSignal("ParticlyColour_" .. id):Connect(function()
+		if id == slot then
+			status.Text = "Saved! " .. SLOTS[id] .. " colour updated."
+		end
+	end)
+end
+openButton.Activated:Connect(function()
+	panel.Visible = not panel.Visible
+	if panel.Visible then
+		fit()
+		selectSlot(slot)
+	end
+end)
+closeButton.Activated:Connect(function()
+	panel.Visible = false
+end)
+update()
+`;
+
+  return { serverSource: SERVER_SOURCE, clientSource: CLIENT_SOURCE };
 })();
 </script>
 <script>
@@ -2536,7 +3594,7 @@ const VEH = (o = {}) => ({ mode: 'vehicle', key: 'LeftShift', ...o });
 /** A nitro jet in any colour scheme. */
 function nitroPreset(name, desc, core, flame, spark, extra = {}) {
   return {
-    name, category: 'Vehicles', desc, partSize: [0.6, 0.6, 0.6], trigger: VEH(), burstLoop: 1.5,
+    name, category: 'Vehicles', desc, partSize: [0.6, 0.6, 0.6], trigger: VEH({ shop: 'boost' }), burstLoop: 1.5,
     layers: [
       { Name: 'Core', ...T('rbx_ff_glow'), Color: core, Size: [[0, 1.1], [1, 0.25]], Squash: -1.6, Transparency: [[0, 0], [1, 0.6]], LightEmission: 1, Brightness: 3, Rate: 140, Lifetime: [0.08, 0.12], Speed: [38, 42], EmissionDirection: 'Back', SpreadAngle: [2, 2], Orientation: 'VelocityParallel', LockedToPart: true },
       { Name: 'Flame', ...T('rbx_fire'), Color: flame, Size: [[0, 1.3, 0.25], [0.6, 0.9], [1, 0.2]], Squash: -1.1, Transparency: [[0, 0.05], [0.7, 0.4], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 110, Lifetime: [0.16, 0.26], Speed: [28, 34], EmissionDirection: 'Back', SpreadAngle: [6, 6], Rotation: [-10, 10], Orientation: 'VelocityParallel', LockedToPart: true },
@@ -3380,6 +4438,7 @@ const twinkles = (color) => ({ Name: 'Twinkles', ...T('rbx_sparkles'), Color: co
 function neonPreset(name, desc, underglow, layers, extra = {}) {
   return {
     name, category: 'Car Neon', desc, partSize: CAR_PLATE, ...extra,
+    trigger: { ...(extra.trigger || {}), shop: 'neon' }, // players can recolour neon in the colour shop
     underglow: { enabled: true, brightness: 2, opacity: 1, light: true, lightBrightness: 3, lightRange: 10, ...underglow },
     layers,
   };
@@ -3420,10 +4479,508 @@ PRESETS.push(
   neonPreset('Neon Spirals', 'Hypnotic magenta spirals, colour cycling.', { design: 'spiral', color: '#ff3cf0', anim: 'rainbow', animSpeed: 0.5 }, [haze('#ff3cf0')]),
   neonPreset('Neon Bubbles', 'Playful teal bubbles.', { design: 'bubbles', color: '#2ad8c8' }, [haze('#2ad8c8')]),
   neonPreset('Neon Paw Prints', 'Pink paw prints.', { design: 'paws', color: '#ff6ad5' }, [haze('#ff6ad5')]),
+  neonPreset('Neon Chasing LEDs', 'LEDs light up one after another, running front to back.', { design: 'led', color: '#00e5ff', anim: 'chase', animSpeed: 1 }, [haze('#00e5ff')]),
+  neonPreset('Neon Knight Scanner', 'A red light sweeping back and forth along the car, like a certain talking car.', { design: 'led', color: '#ff1a1a', anim: 'scanner', animSpeed: 1 }, [haze('#ff1a1a')]),
+  neonPreset('Neon Police Lights', 'Red / blue alternating flashes — press N for the lights.', { design: 'led', color: '#ff1a1a', color2: '#1a5cff', anim: 'police', animSpeed: 1, lightBrightness: 5 }, [haze('#7a4aff')], { trigger: { ...NEON_TOGGLE, buttonText: 'SIREN' } }),
+  neonPreset('Neon Police Bars', 'Red / blue police flashes on solid tubes.', { design: 'bars', color: '#1a5cff', color2: '#ff1a1a', anim: 'police', animSpeed: 0.9, lightBrightness: 5 }, [haze('#7a4aff')], { trigger: { ...NEON_TOGGLE, buttonText: 'SIREN' } }),
+  neonPreset('Neon Two-Tone Fade', 'Twin tubes fading between pink and cyan.', { design: 'double', color: '#ff3cf0', color2: '#00e5ff', anim: 'duo', animSpeed: 1 }, [twinkles('#ffffff')]),
+  neonPreset('Neon Centre Dashes', 'Dashed centre line with lights racing down it.', { design: 'dashes', color: '#39ff6a', anim: 'chase', animSpeed: 1.4 }, [haze('#39ff6a')]),
   neonPreset('Neon Custom Text', 'Your own text along both sides — change it in the Car Neon panel.', { design: 'text', text: 'JDM', color: '#ffffff' }, [haze('#c8d8ff')]),
 );
 
 PRESET_CATEGORIES.splice(1, 0, 'Car Neon');
+</script>
+<script>
+'use strict';
+/*
+ * Racing presets: wheel & tyre FX, speed-reactive FX, race events and track / world pieces.
+ * Speed effects use the "React to car speed / drifting" behaviour, crashes use "Play on crash".
+ */
+
+const SPEED = (o = {}) => ({ mode: 'speed', measure: 'speed', minSpeed: 10, maxSpeed: 120, scaleSize: true, ...o });
+const DRIFT = (o = {}) => SPEED({ measure: 'drift', minSpeed: 8, maxSpeed: 40, ...o });
+const CRASH = (o = {}) => ({ mode: 'impact', impact: 45, duration: 0.4, cooldown: 1, ...o });
+const KEEP_TOUCH = (cooldown = 1.5) => ({ mode: 'touch', keepOn: true, cooldown, duration: 1 });
+
+PRESETS.push(
+  /* ------------------------------ Wheels & Tyres ------------------------------ */
+  {
+    name: 'Wheel Glow Ring', category: 'Wheels & Tyres', desc: 'Neon ring inside the wheel well. Put the Part on the wheel (X = axle). Press N to switch with the underglow.', partSize: [1, 3, 3], trigger: { ...NEON_TOGGLE, shop: 'neon' },
+    layers: [
+      { Name: 'Ring', ...T('ring'), Color: '#3a8dff', Size: 3.2, Transparency: 0.1, LightEmission: 1, Brightness: 3, Rate: 6, Lifetime: [0.4, 0.4], Speed: 0.01, EmissionDirection: 'Right', Orientation: 'VelocityPerpendicular', LockedToPart: true, point: true },
+      { Name: 'Halo', ...T('rbx_ff_glow'), Color: '#3a8dff', Size: 4.2, Transparency: 0.6, LightEmission: 1, Rate: 4, Lifetime: [0.5, 0.5], Speed: 0.01, EmissionDirection: 'Right', Orientation: 'VelocityPerpendicular', LockedToPart: true, point: true },
+    ],
+  },
+  {
+    name: 'Rainbow Rim Glow', category: 'Wheels & Tyres', desc: 'Colour-cycling glow ring on the rims — always on.', partSize: [1, 3, 3],
+    layers: [
+      { Name: 'Ring', ...T('ring'), Color: [[0, '#ff3a3a'], [0.2, '#ffb02a'], [0.4, '#ffee2a'], [0.6, '#3aff6a'], [0.8, '#2ab8ff'], [1, '#b03aff']], Size: 3.2, Transparency: [[0, 1], [0.1, 0.1], [0.9, 0.1], [1, 1]], LightEmission: 1, Brightness: 3, Rate: 4, Lifetime: [1.5, 1.5], Speed: 0.01, EmissionDirection: 'Right', Orientation: 'VelocityPerpendicular', LockedToPart: true, point: true },
+    ],
+  },
+  {
+    name: 'Rim Sparks', category: 'Wheels & Tyres', desc: 'Sparks flung off the spinning rim, more the faster you go. Put the Part on the wheel itself.', partSize: [1, 3, 3], trigger: SPEED({ minSpeed: 30, maxSpeed: 130 }),
+    layers: [
+      { Name: 'Sparks', ...T('rbx_fire_sparks'), Color: ['#ffffff', '#ffc24a'], Size: [[0, 0.25], [1, 0]], Squash: -2, LightEmission: 1, Brightness: 3, Rate: 60, Lifetime: [0.25, 0.45], Speed: [12, 22], EmissionDirection: 'Right', Shape: 'Cylinder', ShapeStyle: 'Surface', Acceleration: [0, -30, 0], Orientation: 'VelocityParallel' },
+    ],
+  },
+  {
+    name: 'Tyre Smoke (Speed)', category: 'Wheels & Tyres', desc: 'Light tyre smoke that thickens with speed — place one at each rear tyre.', partSize: [1, 0.3, 1.5], trigger: SPEED({ minSpeed: 25, maxSpeed: 140, shop: 'smoke' }),
+    layers: [
+      { Name: 'Smoke', ...T('rbx_smoke'), Color: ['#ffffff', '#cfcfcf'], Size: [[0, 1], [1, 7, 1.5]], Transparency: [[0, 0.5], [1, 1]], Rate: 30, Lifetime: [1.2, 2], Speed: [3, 6], EmissionDirection: 'Back', SpreadAngle: [30, 15], Rotation: [0, 360], RotSpeed: [-25, 25], Acceleration: [0, 1.2, 0], Drag: 1.5 },
+    ],
+  },
+  {
+    name: 'Drift Smoke (Auto)', category: 'Wheels & Tyres', desc: 'Pours out automatically when the car slides sideways — no key needed.', partSize: [1, 0.3, 1.5], trigger: DRIFT({ shop: 'smoke' }),
+    layers: [
+      { Name: 'Smoke', ...T('rbx_smoke'), Color: ['#ffffff', '#d6d6d6'], Size: [[0, 1.5], [1, 11, 2]], Transparency: [[0, 0.3], [0.5, 0.55], [1, 1]], Rate: 45, Lifetime: [2, 3], Speed: [4, 9], EmissionDirection: 'Back', SpreadAngle: [35, 20], Rotation: [0, 360], RotSpeed: [-25, 25], Acceleration: [0, 1.5, 0], Drag: 1.6 },
+    ],
+  },
+  {
+    name: 'Skid Marks', category: 'Wheels & Tyres', desc: 'Dark tyre tracks left on the road while drifting. Put the Part at the bottom of each rear tyre.', partSize: [0.8, 0.2, 0.8], trigger: DRIFT({ scaleSize: false }),
+    layers: [
+      { Name: 'Track', ...T('skid'), Color: '#1a1a1a', Size: 0.9, Transparency: [[0, 0.15], [0.8, 0.3], [1, 1]], LightInfluence: 1, Rate: 70, Lifetime: [4, 4], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', Shape: 'Box', ZOffset: -1 },
+    ],
+  },
+  {
+    name: 'Coloured Drift Smoke (Auto)', category: 'Wheels & Tyres', desc: 'Pink & cyan drift smoke when sliding — recolour it in the colour shop.', partSize: [1, 0.3, 1.5], trigger: DRIFT({ shop: 'smoke' }),
+    layers: [
+      { Name: 'Smoke', ...T('rbx_smoke'), Color: ['#ff6ad5', '#6ad8ff'], Size: [[0, 1.5], [1, 10, 2]], Transparency: [[0, 0.35], [1, 1]], Rate: 40, Lifetime: [1.8, 2.6], Speed: [4, 8], EmissionDirection: 'Back', SpreadAngle: [35, 20], Rotation: [0, 360], RotSpeed: [-25, 25], Acceleration: [0, 1.5, 0], Drag: 1.6 },
+    ],
+  },
+  {
+    name: 'Off-Road Dirt Spray', category: 'Wheels & Tyres', desc: 'Dirt and pebbles thrown up by the wheels, more at speed.', partSize: [1, 0.3, 1.5], trigger: SPEED({ minSpeed: 15, maxSpeed: 90 }),
+    layers: [
+      { Name: 'Dirt', ...T('rbx_smoke'), Color: ['#8a6a48', '#5a4630'], Size: [[0, 1], [1, 5]], Transparency: [[0, 0.3], [1, 1]], Rate: 25, Lifetime: [0.8, 1.4], Speed: [6, 10], EmissionDirection: 'Back', SpreadAngle: [30, 30], Rotation: [0, 360], Acceleration: [0, -6, 0], Drag: 2 },
+      { Name: 'Pebbles', ...T('debris'), Color: '#6a5238', Size: [0.3, 0.2], Rate: 20, Lifetime: [0.5, 0.9], Speed: [10, 16], EmissionDirection: 'Back', SpreadAngle: [25, 25], Rotation: [0, 360], RotSpeed: [-300, 300], Acceleration: [0, -40, 0] },
+    ],
+  },
+
+  /* ------------------------------ Speed FX ------------------------------ */
+  {
+    name: 'Speed Flames', category: 'Speed FX', desc: 'Exhaust flames that grow bigger and longer the faster you drive.', partSize: [0.6, 0.6, 0.6], trigger: SPEED({ minSpeed: 20, maxSpeed: 140, shop: 'boost' }),
+    layers: [
+      { Name: 'Flame', ...T('rbx_fire'), Color: [[0, '#fff3c0'], [0.35, '#ff8a1a'], [1, '#d4200c']], Size: [[0, 1.4, 0.25], [0.6, 1], [1, 0.2]], Squash: -1.2, Transparency: [[0, 0.05], [0.7, 0.4], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 120, Lifetime: [0.16, 0.26], Speed: [28, 34], EmissionDirection: 'Back', SpreadAngle: [6, 6], Rotation: [-10, 10], Orientation: 'VelocityParallel', LockedToPart: true },
+      { Name: 'Core', ...T('rbx_ff_glow'), Color: ['#ffffff', '#ffd36b'], Size: [[0, 1], [1, 0.25]], Squash: -1.6, LightEmission: 1, Brightness: 3, Rate: 120, Lifetime: [0.08, 0.12], Speed: [38, 42], EmissionDirection: 'Back', SpreadAngle: [2, 2], Orientation: 'VelocityParallel', LockedToPart: true },
+    ],
+  },
+  {
+    name: 'Speed Wind Rush', category: 'Speed FX', desc: 'White wind streaks rushing past the car above 70 studs/s. Size the Part around the car.', partSize: [8, 4, 14], trigger: SPEED({ minSpeed: 70, maxSpeed: 160, scaleSize: false }),
+    layers: [
+      { Name: 'Wind', ...T('windline'), Color: '#ffffff', Size: [[0, 3], [1, 4]], Squash: -1.5, Transparency: [[0, 1], [0.3, 0.55], [1, 1]], LightEmission: 0.5, Rate: 40, Lifetime: [0.25, 0.35], Speed: [25, 35], EmissionDirection: 'Back', Shape: 'Box', ShapeStyle: 'Surface', Orientation: 'VelocityParallel' },
+    ],
+  },
+  {
+    name: 'Sonic Boom', category: 'Speed FX', desc: 'A vapour cone builds near top speed, then a shock ring blasts out when you hit it.', partSize: [6, 4, 2], trigger: SPEED({ minSpeed: 140, maxSpeed: 180 }), burstLoop: 3,
+    layers: [
+      { Name: 'Vapour Cone', ...T('rbx_smoke'), Color: '#f2f8ff', Size: [[0, 3], [1, 6]], Transparency: [[0, 0.7], [1, 1]], Rate: 30, Lifetime: [0.25, 0.35], Speed: [20, 30], EmissionDirection: 'Back', Shape: 'Cylinder', ShapeStyle: 'Surface', SpreadAngle: [10, 10], Rotation: [0, 360] },
+      { Name: 'Shock Ring', ...T('rbx_exp_shock'), point: true, Color: '#ffffff', Size: [[0, 4], [1, 34]], Transparency: [[0, 0.1], [1, 1]], LightEmission: 1, Brightness: 2, Lifetime: [0.6, 0.6], Speed: 0.01, EmissionDirection: 'Front', Orientation: 'VelocityPerpendicular', mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Flash', ...T('rbx_ff_glow'), point: true, Color: '#dff2ff', Size: [[0, 6], [1, 16]], Transparency: [[0, 0.2], [1, 1]], LightEmission: 1, Brightness: 2, Lifetime: [0.25, 0.25], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+    ],
+  },
+  {
+    name: 'Tail-Light Trails', category: 'Speed FX', desc: 'Long-exposure red light streaks left behind the tail lights at speed.', partSize: [0.4, 0.4, 0.4], trigger: SPEED({ minSpeed: 30, maxSpeed: 120, scaleSize: false }),
+    layers: [
+      { Name: 'Trail', ...T('rbx_ff_glow'), Color: '#ff1a2a', Size: [[0, 0.7], [1, 0.2]], Transparency: [[0, 0.1], [1, 1]], LightEmission: 1, Brightness: 3, Rate: 120, Lifetime: [0.6, 0.6], Speed: 0, Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Underbody Scrape (Speed)', category: 'Speed FX', desc: 'Sparks from a lowered car scraping the road at high speed.', partSize: [4, 0.2, 2], trigger: SPEED({ minSpeed: 80, maxSpeed: 160 }),
+    layers: [
+      { Name: 'Sparks', ...T('rbx_fire_sparks'), Color: ['#ffffff', '#ffb347'], Size: [[0, 0.3], [1, 0]], Squash: -2, LightEmission: 1, Brightness: 3, Rate: 50, Lifetime: [0.3, 0.5], Speed: [10, 20], EmissionDirection: 'Back', SpreadAngle: [30, 10], Acceleration: [0, -25, 0], Orientation: 'VelocityParallel', Shape: 'Box', ShapeStyle: 'Surface' },
+    ],
+  },
+  {
+    name: 'Hyper Drive Streaks', category: 'Speed FX', desc: 'Blue sci-fi energy streaks around a fast car.', partSize: [7, 4, 12], trigger: SPEED({ minSpeed: 60, maxSpeed: 180, shop: 'boost' }),
+    layers: [
+      { Name: 'Streaks', ...T('streak'), Color: ['#ffffff', '#4ab8ff'], Size: [[0, 0.5], [1, 0.2]], Squash: -2.5, LightEmission: 1, Brightness: 3, Rate: 60, Lifetime: [0.2, 0.3], Speed: [40, 60], EmissionDirection: 'Back', Shape: 'Box', ShapeStyle: 'Surface', Orientation: 'VelocityParallel' },
+    ],
+  },
+  {
+    name: 'Speed Aura (Anime)', category: 'Speed FX', desc: 'A glowing aura that flares around the car the faster it goes.', partSize: [6, 3, 11], trigger: SPEED({ minSpeed: 40, maxSpeed: 150, shop: 'aura' }),
+    layers: [
+      { Name: 'Aura', ...T('rbx_fire'), Color: ['#ffffff', '#ffe04a'], Size: [[0, 2], [1, 0.5]], Transparency: [[0, 0.4], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 50, Lifetime: [0.3, 0.5], Speed: [6, 10], EmissionDirection: 'Back', Shape: 'Box', ShapeStyle: 'Surface', Acceleration: [0, 6, 0] },
+    ],
+  },
+
+  /* ------------------------------ Race Events ------------------------------ */
+  {
+    name: 'Start Countdown (3-2-1-GO)', category: 'Race Events', desc: 'Big 3 · 2 · 1 · GO! numbers with red / green lamp flashes. Upload the number PNGs for the digits.', partSize: [8, 8, 1], trigger: PROMPT('Start race', 4, 5), burstLoop: 5,
+    layers: [
+      ...[['t_3', 0], ['t_2', 1], ['t_1', 2]].map(([tex, d]) => ({ Name: 'Number ' + (3 - d), ...T(tex), point: true, Color: '#ff3a3a', Size: [[0, 5], [0.15, 6.5], [0.85, 6], [1, 4]], Transparency: [[0, 0], [0.85, 0], [1, 1]], LightEmission: 0.6, Brightness: 2, Lifetime: [0.9, 0.9], Speed: 0, LockedToPart: true, mode: 'burst', emitCount: 1, emitDelay: d, Enabled: false })),
+      { Name: 'GO', ...T('t_go'), point: true, Color: '#3aff6a', Size: [[0, 5], [0.2, 9], [1, 10]], Transparency: [[0, 0], [0.7, 0], [1, 1]], LightEmission: 0.6, Brightness: 2, Lifetime: [1.2, 1.2], Speed: 0, LockedToPart: true, mode: 'burst', emitCount: 1, emitDelay: 3, Enabled: false },
+      ...[0, 1, 2].map((d) => ({ Name: 'Red Lamp ' + (d + 1), ...T('rbx_ff_glow'), point: true, Color: '#ff1a1a', Size: [[0, 12], [1, 9]], Transparency: [[0, 0.3], [1, 1]], LightEmission: 1, Brightness: 2, Lifetime: [0.7, 0.7], Speed: 0, LockedToPart: true, ZOffset: -1, mode: 'burst', emitCount: 1, emitDelay: d, Enabled: false })),
+      { Name: 'Green Lamp', ...T('rbx_ff_glow'), point: true, Color: '#2aff5a', Size: [[0, 14], [1, 18]], Transparency: [[0, 0.2], [1, 1]], LightEmission: 1, Brightness: 3, Lifetime: [1, 1], Speed: 0, LockedToPart: true, ZOffset: -1, mode: 'burst', emitCount: 1, emitDelay: 3, Enabled: false },
+    ],
+  },
+  {
+    name: 'Start Lights (no upload)', category: 'Race Events', desc: 'Three red light flashes then a big green one — built-in textures only.', partSize: [6, 6, 1], trigger: PROMPT('Start race', 4, 5), burstLoop: 5,
+    layers: [
+      ...[0, 1, 2].map((d) => ({ Name: 'Red ' + (d + 1), ...T('rbx_ff_glow'), point: true, Color: '#ff1a1a', Size: [[0, 6], [1, 4]], Transparency: [[0, 0], [1, 1]], LightEmission: 1, Brightness: 3, Lifetime: [0.8, 0.8], Speed: 0, LockedToPart: true, mode: 'burst', emitCount: 2, emitDelay: d, Enabled: false })),
+      { Name: 'Green', ...T('rbx_ff_glow'), point: true, Color: '#2aff5a', Size: [[0, 8], [1, 14]], Transparency: [[0, 0], [1, 1]], LightEmission: 1, Brightness: 3, Lifetime: [1.2, 1.2], Speed: 0, LockedToPart: true, mode: 'burst', emitCount: 2, emitDelay: 3, Enabled: false },
+      { Name: 'Go Sparks', ...T('rbx_sparkles'), point: true, Color: ['#ffffff', '#6aff8a'], Size: [[0, 1], [1, 0]], LightEmission: 1, Brightness: 2, Lifetime: [0.6, 1], Speed: [10, 18], SpreadAngle: [180, 180], Drag: 2, mode: 'burst', emitCount: 40, emitDelay: 3, Enabled: false },
+    ],
+  },
+  {
+    name: 'Checkpoint Gate', category: 'Race Events', desc: 'A shimmering gate that flashes when a car drives through. Make the Part as wide as the road.', partSize: [24, 12, 1], trigger: KEEP_TOUCH(1),
+    layers: [
+      { Name: 'Shimmer', ...T('rbx_ff_glow'), Color: '#3ad8ff', Size: [[0, 0], [0.5, 1.2], [1, 0]], Transparency: 0.4, LightEmission: 1, Rate: 40, Lifetime: [1, 1.6], Speed: [0.5, 1.5], EmissionDirection: 'Top', Shape: 'Box', Acceleration: [0, 1, 0] },
+      { Name: 'Flash', ...T('rbx_ff_glow'), Color: '#bff4ff', Size: [[0, 4], [1, 8]], Transparency: [[0, 0.3], [1, 1]], LightEmission: 1, Brightness: 2, Lifetime: [0.3, 0.4], Speed: 0, Shape: 'Box', mode: 'burst', emitCount: 30, Enabled: false },
+      { Name: 'Sparkles', ...T('rbx_sparkles'), Color: ['#ffffff', '#3ad8ff'], Size: [[0, 0.8], [1, 0]], LightEmission: 1, Brightness: 2, Lifetime: [0.6, 1], Speed: [6, 12], EmissionDirection: 'Front', SpreadAngle: [60, 60], Shape: 'Box', Drag: 2, mode: 'burst', emitCount: 50, Enabled: false },
+    ],
+  },
+  {
+    name: 'Finish Line Confetti', category: 'Race Events', desc: 'A checkered shimmer over the finish line; confetti cannons fire when a car crosses.', partSize: [24, 1, 4], trigger: KEEP_TOUCH(3),
+    layers: [
+      { Name: 'Checker Shimmer', ...T('checker'), Color: '#ffffff', Size: [[0, 0], [0.5, 1.2], [1, 0]], Transparency: 0.3, LightEmission: 0.5, Rate: 12, Lifetime: [1, 1.5], Speed: [1, 2], EmissionDirection: 'Top', Shape: 'Box', Rotation: [0, 360] },
+      { Name: 'Confetti', ...T('confetti'), Color: [[0, '#ff3a5a'], [0.33, '#ffd23a'], [0.66, '#3ad8ff'], [1, '#6aff6a']], Size: 0.5, LightInfluence: 0.3, Lifetime: [2.5, 3.5], Speed: [30, 45], EmissionDirection: 'Top', SpreadAngle: [25, 25], Shape: 'Box', Rotation: [0, 360], RotSpeed: [-400, 400], Acceleration: [0, -18, 0], Drag: 1.5, mode: 'burst', emitCount: 150, Enabled: false },
+      { Name: 'Streamers', ...T('streak'), Color: ['#ffffff', '#ffd23a'], Size: [[0, 0.6], [1, 0.3]], Squash: -1.5, LightEmission: 0.6, Lifetime: [1.2, 1.8], Speed: [35, 50], EmissionDirection: 'Top', SpreadAngle: [20, 20], Shape: 'Box', Acceleration: [0, -20, 0], Orientation: 'VelocityParallel', mode: 'burst', emitCount: 30, Enabled: false },
+      { Name: 'FINISH', ...T('t_finish'), point: true, Color: '#ffffff', Size: [[0, 4], [0.2, 10], [1, 12]], Transparency: [[0, 0], [0.7, 0], [1, 1]], LightEmission: 0.5, Brightness: 2, Lifetime: [1.5, 1.5], Speed: [4, 4], EmissionDirection: 'Top', mode: 'burst', emitCount: 1, Enabled: false },
+    ],
+  },
+  {
+    name: 'New Record Burst', category: 'Race Events', desc: '"NEW RECORD!" pops up with a golden star burst. Fire it from your race script: require(part.ParticlyControl).burst().', partSize: [1, 1, 1], trigger: SCRIPTED, burstLoop: 3,
+    layers: [
+      { Name: 'Text', ...T('t_record'), point: true, Color: ['#fff3b0', '#ffc83a'], Size: [[0, 2], [0.12, 9], [0.2, 8], [1, 8.5]], Transparency: [[0, 0], [0.75, 0], [1, 1]], LightEmission: 0.5, Brightness: 2, Lifetime: [2, 2], Speed: [1.5, 1.5], EmissionDirection: 'Top', mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Gold Stars', ...T('star5'), point: true, Color: ['#fff3b0', '#ffb01a'], Size: [[0, 1.2], [1, 0]], LightEmission: 0.8, Brightness: 2, Lifetime: [1, 1.6], Speed: [14, 24], SpreadAngle: [180, 180], Rotation: [0, 360], RotSpeed: [-200, 200], Drag: 2.5, Acceleration: [0, -4, 0], mode: 'burst', emitCount: 40, Enabled: false },
+      { Name: 'Ring', ...T('rbx_exp_shock'), point: true, Color: '#ffd23a', Size: [[0, 2], [1, 20]], Transparency: [[0, 0.2], [1, 1]], LightEmission: 1, Lifetime: [0.6, 0.6], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+    ],
+  },
+  {
+    name: 'Crash Spark Shower', category: 'Race Events', desc: 'A shower of sparks whenever the car crashes or hits a wall. Put it at the front bumper.', partSize: [5, 1.5, 1], trigger: CRASH(), burstLoop: 2,
+    layers: [
+      { Name: 'Spark Burst', ...T('rbx_fire_sparks'), Color: ['#ffffff', '#ffb347'], Size: [[0, 0.4], [1, 0]], Squash: -2, LightEmission: 1, Brightness: 3, Lifetime: [0.4, 0.9], Speed: [20, 40], EmissionDirection: 'Front', SpreadAngle: [70, 50], Shape: 'Box', Acceleration: [0, -40, 0], Drag: 1, Orientation: 'VelocityParallel', mode: 'burst', emitCount: 80, Enabled: false },
+      { Name: 'Flash', ...T('rbx_ff_glow'), point: true, Color: '#ffe6b0', Size: [[0, 3], [1, 8]], Transparency: [[0, 0.1], [1, 1]], LightEmission: 1, Brightness: 2, Lifetime: [0.15, 0.15], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Grind Sparks', ...T('rbx_fire_sparks'), Color: '#ffcf6a', Size: [0.25, 0], Squash: -2, LightEmission: 1, Brightness: 3, Rate: 60, Lifetime: [0.2, 0.4], Speed: [10, 20], EmissionDirection: 'Front', SpreadAngle: [50, 30], Shape: 'Box', Acceleration: [0, -30, 0], Orientation: 'VelocityParallel' },
+    ],
+  },
+  {
+    name: 'Crash Debris & Smoke', category: 'Race Events', desc: 'Bits of bodywork, glass and a puff of smoke on a hard crash.', partSize: [5, 1.5, 1], trigger: CRASH({ impact: 60, duration: 1.5 }), burstLoop: 2.5,
+    layers: [
+      { Name: 'Debris', ...T('debris'), Color: ['#555a66', '#2a2d33'], Size: [0.6, 0.4], Lifetime: [1, 1.6], Speed: [12, 22], EmissionDirection: 'Front', SpreadAngle: [70, 60], Shape: 'Box', Rotation: [0, 360], RotSpeed: [-400, 400], Acceleration: [0, -50, 0], mode: 'burst', emitCount: 20, Enabled: false },
+      { Name: 'Glass', ...T('shard'), Color: '#d8f2ff', Size: [0.3, 0.15], LightEmission: 0.3, Lifetime: [0.8, 1.2], Speed: [10, 18], EmissionDirection: 'Front', SpreadAngle: [80, 60], Shape: 'Box', Rotation: [0, 360], RotSpeed: [-600, 600], Acceleration: [0, -50, 0], mode: 'burst', emitCount: 25, Enabled: false },
+      { Name: 'Smoke', ...T('rbx_smoke'), Color: ['#9a9a9a', '#4a4a4a'], Size: [[0, 2], [1, 7]], Transparency: [[0, 0.3], [1, 1]], Rate: 25, Lifetime: [1.2, 2], Speed: [2, 5], EmissionDirection: 'Top', SpreadAngle: [40, 40], Shape: 'Box', Rotation: [0, 360], RotSpeed: [-30, 30], Acceleration: [0, 2, 0] },
+    ],
+  },
+  {
+    name: 'Victory Podium Sparkle', category: 'Race Events', desc: 'Gold glitter raining over the winner\'s podium.', partSize: [8, 1, 8],
+    layers: [
+      { Name: 'Glitter', ...T('rbx_sparkles'), Color: ['#ffffff', '#ffd23a'], Size: [[0, 0.5], [0.5, 0.8], [1, 0]], LightEmission: 1, Brightness: 2, Rate: 30, Lifetime: [2, 3], Speed: [1, 2], EmissionDirection: 'Bottom', Shape: 'Box', Acceleration: [0, -2, 0], Rotation: [0, 360] },
+      { Name: 'Gold Glow', ...T('rbx_ff_glow'), Color: '#ffc83a', Size: [[0, 0], [0.5, 4], [1, 0]], Transparency: 0.75, LightEmission: 1, Rate: 3, Lifetime: [2, 3], Speed: [0.5, 1], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+
+  /* ------------------------------ Track & World ------------------------------ */
+  {
+    name: 'Chevron Boost Pad', category: 'Track & World', desc: 'Glowing arrows floating forward (toward Front, -Z); a whoosh fires when a car drives over it.', partSize: [8, 0.4, 12], trigger: KEEP_TOUCH(1),
+    layers: [
+      { Name: 'Arrows', ...T('chevron'), Color: '#ffd23a', Size: 2.5, Transparency: [[0, 1], [0.2, 0.1], [0.8, 0.1], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 5, Lifetime: [1.2, 1.2], Speed: [6, 6], EmissionDirection: 'Front', Orientation: 'FacingCameraWorldUp', Shape: 'Box', LockedToPart: true },
+      { Name: 'Glow', ...T('rbx_ff_glow'), Color: '#ff9a1a', Size: [[0, 0], [0.5, 3], [1, 0]], Transparency: 0.6, LightEmission: 1, Rate: 12, Lifetime: [0.8, 1.2], Speed: [0.5, 1], EmissionDirection: 'Top', Shape: 'Box' },
+      { Name: 'Whoosh', ...T('streak'), Color: ['#ffffff', '#ffd23a'], Size: [[0, 1], [1, 0.4]], Squash: -2, LightEmission: 1, Brightness: 2, Lifetime: [0.3, 0.5], Speed: [40, 60], EmissionDirection: 'Front', SpreadAngle: [8, 8], Shape: 'Box', Orientation: 'VelocityParallel', mode: 'burst', emitCount: 40, Enabled: false },
+    ],
+  },
+  {
+    name: 'Boost Ramp Sparks', category: 'Track & World', desc: 'Ramp edge glows; a launch of sparks and smoke when a car takes off. Put the Part along the ramp lip.', partSize: [10, 0.5, 1], trigger: KEEP_TOUCH(1),
+    layers: [
+      { Name: 'Edge Glow', ...T('rbx_ff_glow'), Color: '#3ad8ff', Size: [[0, 0], [0.5, 1.5], [1, 0]], Transparency: 0.3, LightEmission: 1, Rate: 25, Lifetime: [0.6, 1], Speed: [0.5, 1], EmissionDirection: 'Top', Shape: 'Box' },
+      { Name: 'Launch Sparks', ...T('rbx_fire_sparks'), Color: ['#ffffff', '#3ad8ff'], Size: [[0, 0.4], [1, 0]], Squash: -2, LightEmission: 1, Brightness: 3, Lifetime: [0.4, 0.8], Speed: [20, 35], EmissionDirection: 'Top', SpreadAngle: [40, 40], Shape: 'Box', Acceleration: [0, -30, 0], Orientation: 'VelocityParallel', mode: 'burst', emitCount: 60, Enabled: false },
+      { Name: 'Launch Smoke', ...T('rbx_smoke'), Color: '#d0d6e0', Size: [[0, 2], [1, 6]], Transparency: [[0, 0.4], [1, 1]], Lifetime: [1, 1.5], Speed: [3, 6], EmissionDirection: 'Top', SpreadAngle: [50, 50], Shape: 'Box', Rotation: [0, 360], Drag: 2, mode: 'burst', emitCount: 12, Enabled: false },
+    ],
+  },
+  {
+    name: 'Neon Road Edge', category: 'Track & World', desc: 'A glowing neon tube along the edge of the road (a SurfaceGui strip, no upload). Stretch the Part\'s Z to the road length.', partSize: [1.2, 0.2, 60],
+    underglow: { enabled: true, design: 'strip', color: '#ff3cf0', brightness: 2.5, opacity: 1, light: false },
+    layers: [{ Name: 'Glow Motes', ...T('rbx_ff_glow'), Color: '#ff3cf0', Size: [[0, 0], [0.5, 1], [1, 0]], Transparency: 0.5, LightEmission: 1, Rate: 10, Lifetime: [1, 2], Speed: [0.3, 0.8], EmissionDirection: 'Top', Shape: 'Box' }],
+  },
+  {
+    name: 'Tunnel Light Strip', category: 'Track & World', desc: 'Dashed lights racing along a tunnel. Flip the Part upside down for the ceiling — the light then shines down.', partSize: [2, 0.2, 80],
+    underglow: { enabled: true, design: 'dashes', color: '#ffe6a0', brightness: 3, opacity: 1, anim: 'chase', animSpeed: 0.6, light: true, lightBrightness: 4, lightRange: 16 },
+    layers: [{ Name: 'Haze', ...T('rbx_ff_glow'), Color: '#ffe6a0', Size: [[0, 2], [1, 3]], Transparency: [[0, 1], [0.5, 0.88], [1, 1]], LightEmission: 1, Rate: 6, Lifetime: [2, 3], Speed: [0.1, 0.3], Shape: 'Box' }],
+  },
+  {
+    name: 'Rain Splashing Off Cars', category: 'Track & World', desc: 'Raindrops bouncing off a car roof and bonnet. Put the Part flat on top of the car.', partSize: [5, 0.3, 10],
+    layers: [
+      { Name: 'Splashes', ...T('rbx_fire_sparks'), Color: '#cfe6ff', Size: [[0, 0.15], [1, 0.05]], Transparency: 0.3, Rate: 60, Lifetime: [0.25, 0.4], Speed: [3, 6], EmissionDirection: 'Top', SpreadAngle: [50, 50], Shape: 'Box', ShapeStyle: 'Surface', Acceleration: [0, -30, 0] },
+      { Name: 'Spray Mist', ...T('rbx_smoke'), Color: '#e6f2ff', Size: [[0, 1], [1, 2.5]], Transparency: [[0, 0.8], [1, 1]], Rate: 8, Lifetime: [0.6, 1], Speed: [0.5, 1], EmissionDirection: 'Top', Shape: 'Box', ShapeStyle: 'Surface' },
+    ],
+  },
+  {
+    name: 'Puddle Shimmer & Splash', category: 'Track & World', desc: 'Ripples and glints on a puddle; a big splash when a car drives through.', partSize: [8, 0.2, 6], trigger: KEEP_TOUCH(0.8),
+    layers: [
+      { Name: 'Ripples', ...T('ripple'), Color: '#cfe6ff', Size: [[0, 0.5], [1, 3]], Transparency: [[0, 0.4], [1, 1]], LightEmission: 0.3, Rate: 4, Lifetime: [1.2, 1.6], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', Shape: 'Box' },
+      { Name: 'Glints', ...T('rbx_sparkles'), Color: '#ffffff', Size: [[0, 0], [0.5, 0.4], [1, 0]], LightEmission: 1, Rate: 6, Lifetime: [0.3, 0.6], Speed: 0, Shape: 'Box' },
+      { Name: 'Splash', ...T('splash'), Color: '#e6f4ff', Size: [[0, 2], [1, 5]], Transparency: [[0, 0.1], [1, 1]], LightInfluence: 0.6, Lifetime: [0.5, 0.7], Speed: [2, 4], EmissionDirection: 'Top', Shape: 'Box', mode: 'burst', emitCount: 4, Enabled: false },
+      { Name: 'Droplets', ...T('droplet'), Color: '#cfe6ff', Size: [0.3, 0.15], Lifetime: [0.6, 0.9], Speed: [12, 18], EmissionDirection: 'Top', SpreadAngle: [45, 45], Shape: 'Box', Acceleration: [0, -50, 0], mode: 'burst', emitCount: 60, Enabled: false },
+    ],
+  },
+  {
+    name: 'Wet Road Sheen', category: 'Track & World', desc: 'Soft streaks of reflected light on a wet road at night (fakes reflections).', partSize: [16, 0.2, 30],
+    layers: [
+      { Name: 'Sheen', ...T('beam'), Color: ['#ffb36a', '#6ab8ff'], Size: [[0, 0], [0.5, 4], [1, 0]], Squash: -1.2, Transparency: 0.75, LightEmission: 1, Rate: 6, Lifetime: [2, 3], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Garage Showroom Spotlight', category: 'Track & World', desc: 'Spotlight beam with dust motes and a glowing turntable ring under the car.', partSize: [16, 0.2, 16],
+    underglow: { enabled: true, design: 'ring', color: '#ffffff', brightness: 1.5, opacity: 0.8, anim: 'breathe', animSpeed: 0.4, light: true, lightBrightness: 2, lightRange: 12 },
+    layers: [
+      { Name: 'Beam', ...T('beam'), point: true, Color: '#fff6e0', Size: 18, Transparency: 0.82, LightEmission: 1, Rate: 2, Lifetime: [2, 2], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'FacingCameraWorldUp', LockedToPart: true },
+      { Name: 'Dust Motes', ...T('rbx_ff_glow'), Color: '#fff6e0', Size: [[0, 0], [0.5, 0.25], [1, 0]], LightEmission: 1, Rate: 15, Lifetime: [3, 5], Speed: [0.2, 0.6], EmissionDirection: 'Top', Shape: 'Cylinder', Acceleration: [0, 0.3, 0] },
+    ],
+  },
+  {
+    name: 'Dirt Road Dust Trail', category: 'Track & World', desc: 'A long cloud of dust behind a car on dirt roads, thicker at speed.', partSize: [6, 0.3, 1], trigger: SPEED({ minSpeed: 15, maxSpeed: 100 }),
+    layers: [
+      { Name: 'Dust', ...T('rbx_smoke'), Color: ['#d8c39a', '#b09870'], Size: [[0, 2], [1, 12, 2]], Transparency: [[0, 0.4], [1, 1]], Rate: 25, Lifetime: [2.5, 4], Speed: [2, 4], EmissionDirection: 'Back', SpreadAngle: [30, 20], Shape: 'Box', Rotation: [0, 360], RotSpeed: [-15, 15], Acceleration: [0, 0.8, 0], Drag: 1 },
+    ],
+  },
+);
+
+PRESET_CATEGORIES.splice(PRESET_CATEGORIES.indexOf('Car Neon') + 1, 0, 'Wheels & Tyres', 'Speed FX', 'Race Events', 'Track & World');
+</script>
+<script>
+'use strict';
+/* Preset packs: water, cartoon & anime, retro / pixel, and holidays. */
+
+PRESETS.push(
+  /* ------------------------------ Water ------------------------------ */
+  {
+    name: 'Splash (Jump In)', category: 'Water', desc: 'Big splash when a player or car lands in water. Lay the Part flat on the water surface.', partSize: [10, 0.4, 10], trigger: TOUCH(0.2, 1.2),
+    layers: [
+      { Name: 'Crown', ...T('splash'), point: true, Color: '#e6f4ff', Size: [[0, 3], [1, 8]], Transparency: [[0, 0.05], [1, 1]], LightInfluence: 0.6, Lifetime: [0.6, 0.8], Speed: [2, 3], EmissionDirection: 'Top', mode: 'burst', emitCount: 3, Enabled: false },
+      { Name: 'Droplets', ...T('droplet'), point: true, Color: '#cfe6ff', Size: [0.5, 0.2], Lifetime: [0.8, 1.2], Speed: [16, 26], EmissionDirection: 'Top', SpreadAngle: [40, 40], Acceleration: [0, -60, 0], mode: 'burst', emitCount: 50, Enabled: false },
+      { Name: 'Ring', ...T('ripple'), point: true, Color: '#ffffff', Size: [[0, 2], [1, 16]], Transparency: [[0, 0.2], [1, 1]], Lifetime: [1.2, 1.2], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Mist', ...T('rbx_smoke'), point: true, Color: '#f2f8ff', Size: [[0, 2], [1, 7]], Transparency: [[0, 0.5], [1, 1]], Lifetime: [1, 1.5], Speed: [4, 8], EmissionDirection: 'Top', SpreadAngle: [60, 60], Drag: 2, mode: 'burst', emitCount: 10, Enabled: false },
+    ],
+  },
+  {
+    name: 'Ocean Wave Foam', category: 'Water', desc: 'White foam rolling along a shoreline. Stretch the Part along the beach.', partSize: [40, 0.5, 4],
+    layers: [
+      { Name: 'Foam', ...T('foam'), Color: '#ffffff', Size: [[0, 1], [1, 4]], Transparency: [[0, 1], [0.2, 0.2], [1, 1]], LightInfluence: 0.8, Rate: 25, Lifetime: [2, 3], Speed: [1.5, 3], EmissionDirection: 'Front', Shape: 'Box', Rotation: [0, 360], Orientation: 'FacingCameraWorldUp' },
+      { Name: 'Spray', ...T('rbx_smoke'), Color: '#e6f4ff', Size: [[0, 1], [1, 3]], Transparency: [[0, 0.7], [1, 1]], Rate: 10, Lifetime: [1, 1.5], Speed: [2, 4], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Park Fountain', category: 'Water', desc: 'Arcing water jets falling back into a basin.', partSize: [1, 0.4, 1],
+    layers: [
+      { Name: 'Jet', ...T('droplet'), Color: '#cfe8ff', Size: [[0, 0.5], [1, 0.3]], Transparency: 0.2, LightInfluence: 0.6, Rate: 120, Lifetime: [1.4, 1.6], Speed: [20, 22], EmissionDirection: 'Top', SpreadAngle: [12, 12], Acceleration: [0, -30, 0], Orientation: 'VelocityParallel', Squash: -0.8 },
+      { Name: 'Spray', ...T('rbx_smoke'), Color: '#ffffff', Size: [[0, 0.5], [1, 2]], Transparency: [[0, 0.75], [1, 1]], Rate: 20, Lifetime: [0.8, 1.2], Speed: [18, 20], EmissionDirection: 'Top', SpreadAngle: [14, 14], Acceleration: [0, -25, 0] },
+    ],
+  },
+  {
+    name: 'Rain Ripples', category: 'Water', desc: 'Raindrop rings spreading across a pond or puddle.', partSize: [20, 0.2, 20],
+    layers: [
+      { Name: 'Ripples', ...T('ripple'), Color: '#dceeff', Size: [[0, 0.2], [1, 2.5]], Transparency: [[0, 0.3], [1, 1]], LightEmission: 0.2, Rate: 30, Lifetime: [0.8, 1.2], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Garden Sprinkler', category: 'Water', desc: 'Sweeping fan of water from a lawn sprinkler.', partSize: [0.5, 0.5, 0.5],
+    layers: [
+      { Name: 'Water', ...T('droplet'), Color: '#cfe8ff', Size: [0.25, 0.15], Transparency: 0.2, Rate: 150, Lifetime: [1, 1.3], Speed: [14, 16], EmissionDirection: 'Top', SpreadAngle: [60, 6], Acceleration: [0, -25, 0], Orientation: 'VelocityParallel', Squash: -0.6 },
+    ],
+  },
+  {
+    name: 'Underwater Bubble Stream', category: 'Water', desc: 'Bubbles wobbling up from a diver or vent.', partSize: [0.5, 0.5, 0.5],
+    layers: [
+      { Name: 'Bubbles', ...T('bubble'), Color: '#dff6ff', Size: [[0, 0.2], [1, 0.6, 0.2]], Transparency: [[0, 0.2], [0.9, 0.3], [1, 1]], LightEmission: 0.2, Rate: 12, Lifetime: [2, 3], Speed: [3, 5], EmissionDirection: 'Top', SpreadAngle: [10, 10], Acceleration: [0, 1, 0], Drag: 0.5, RotSpeed: [-60, 60] },
+    ],
+  },
+  {
+    name: 'Jet Ski Wake', category: 'Water', desc: 'Spray and foam behind a fast boat, bigger with speed.', partSize: [2, 0.4, 1], trigger: SPEED({ minSpeed: 10, maxSpeed: 90 }),
+    layers: [
+      { Name: 'Spray', ...T('rbx_smoke'), Color: '#ffffff', Size: [[0, 1], [1, 5]], Transparency: [[0, 0.3], [1, 1]], Rate: 50, Lifetime: [0.8, 1.2], Speed: [8, 14], EmissionDirection: 'Back', SpreadAngle: [30, 20], Acceleration: [0, -20, 0], Rotation: [0, 360] },
+      { Name: 'Foam Trail', ...T('foam'), Color: '#ffffff', Size: [[0, 2], [1, 4]], Transparency: [[0, 0.3], [1, 1]], Rate: 20, Lifetime: [2, 3], Speed: 0.01, EmissionDirection: 'Top', Orientation: 'VelocityPerpendicular', Rotation: [0, 360], Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Water Hose Spray', category: 'Water', desc: 'A strong water jet — fire it from a script while a tool is held.', partSize: [0.3, 0.3, 0.3], trigger: SCRIPTED,
+    layers: [
+      { Name: 'Jet', ...T('droplet'), Color: '#d6ecff', Size: [[0, 0.3], [1, 0.6]], Transparency: 0.15, LightInfluence: 0.6, Rate: 150, Lifetime: [0.7, 0.9], Speed: [40, 45], EmissionDirection: 'Front', SpreadAngle: [3, 3], Acceleration: [0, -30, 0], Orientation: 'VelocityParallel', Squash: -1 },
+      { Name: 'Mist', ...T('rbx_smoke'), Color: '#ffffff', Size: [[0, 0.5], [1, 3]], Transparency: [[0, 0.8], [1, 1]], Rate: 20, Lifetime: [0.6, 0.9], Speed: [30, 38], EmissionDirection: 'Front', SpreadAngle: [6, 6], Acceleration: [0, -20, 0] },
+    ],
+  },
+
+  /* ------------------------------ Cartoon & Anime ------------------------------ */
+  {
+    name: 'Comic POW Hit', category: 'Cartoon & Anime', desc: 'Comic-book "POW" burst with action lines when something gets hit.', partSize: [1, 1, 1], trigger: SCRIPTED, burstLoop: 1.5,
+    layers: [
+      { Name: 'Pow', ...T('pow'), point: true, Color: ['#fff36a', '#ff9a1a'], Size: [[0, 2], [0.15, 6], [0.8, 5.5], [1, 0]], Rotation: [-15, 15], LightEmission: 0.3, Lifetime: [0.5, 0.5], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Action Lines', ...T('streak'), point: true, Color: '#ffffff', Size: [[0, 1.2], [1, 0]], Squash: -2, LightEmission: 0.5, Lifetime: [0.2, 0.3], Speed: [25, 35], SpreadAngle: [180, 180], Orientation: 'VelocityParallel', mode: 'burst', emitCount: 14, Enabled: false },
+    ],
+  },
+  {
+    name: 'Anime Impact Frame', category: 'Cartoon & Anime', desc: 'Black & white manga speed-line flash for big hits.', partSize: [1, 1, 1], trigger: SCRIPTED, burstLoop: 1.5,
+    layers: [
+      { Name: 'Speed Lines', ...T('impact_lines'), point: true, Color: '#ffffff', Size: [[0, 10], [1, 16]], Transparency: [[0, 0], [0.7, 0], [1, 1]], Rotation: [0, 360], LightEmission: 0, Lifetime: [0.25, 0.25], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Flash', ...T('rbx_ff_glow'), point: true, Color: '#ffffff', Size: [[0, 2], [1, 8]], Transparency: [[0, 0], [1, 1]], LightEmission: 1, Brightness: 4, Lifetime: [0.12, 0.12], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+      { Name: 'Shock', ...T('rbx_exp_shock'), point: true, Color: '#ffffff', Size: [[0, 1], [1, 12]], Transparency: [[0, 0], [1, 1]], LightEmission: 1, Lifetime: [0.3, 0.3], Speed: 0, mode: 'burst', emitCount: 1, Enabled: false },
+    ],
+  },
+  {
+    name: 'Sweat Drops', category: 'Cartoon & Anime', desc: 'Nervous sweat drops popping off a character\'s head.', partSize: [1.5, 0.5, 1.5], trigger: CHAR({ attachTo: 'Head' }),
+    layers: [
+      { Name: 'Drops', ...T('droplet'), Color: '#8fd8ff', Size: [[0, 0], [0.15, 0.6], [1, 0.5]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightInfluence: 0.4, Rate: 2, Lifetime: [0.7, 0.9], Speed: [4, 6], EmissionDirection: 'Top', SpreadAngle: [45, 45], Acceleration: [0, -12, 0] },
+    ],
+  },
+  {
+    name: 'Anger Mark', category: 'Cartoon & Anime', desc: 'Throbbing red anger vein above an angry character.', partSize: [0.5, 0.5, 0.5], trigger: CHAR({ attachTo: 'Head' }),
+    layers: [
+      { Name: 'Vein', ...T('anger'), Color: '#ff2a3a', Size: [[0, 1.2], [0.25, 1.6], [0.5, 1.2], [0.75, 1.6], [1, 1.2]], Transparency: [[0, 1], [0.1, 0], [0.9, 0], [1, 1]], LightEmission: 0.3, Rate: 1, Lifetime: [1, 1], Speed: [2.5, 2.5], EmissionDirection: 'Top', Drag: 6, LockedToPart: true },
+    ],
+  },
+  {
+    name: 'Kawaii Sparkles', category: 'Cartoon & Anime', desc: 'Cute pink sparkles and hearts floating around a character.', partSize: [3, 4, 3], trigger: CHAR(),
+    layers: [
+      { Name: 'Sparkles', ...T('star4'), Color: ['#ffffff', '#ffb3e6'], Size: [[0, 0], [0.5, 0.6], [1, 0]], LightEmission: 0.8, Rate: 6, Lifetime: [0.8, 1.2], Speed: [0.5, 1], Shape: 'Box', Rotation: [0, 90] },
+      { Name: 'Hearts', ...T('heart'), Color: '#ff6ab0', Size: [[0, 0], [0.3, 0.5], [1, 0.4]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightEmission: 0.3, Rate: 2, Lifetime: [1.2, 1.6], Speed: [1, 2], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Dizzy Swirl', category: 'Cartoon & Anime', desc: 'Spinning swirl and stars over a stunned character.', partSize: [0.5, 0.5, 0.5], trigger: CHAR({ attachTo: 'Head' }),
+    layers: [
+      { Name: 'Swirl', ...T('spiral'), point: true, Color: '#ffffff', Size: 1.8, Transparency: [[0, 1], [0.1, 0.1], [0.9, 0.1], [1, 1]], LightEmission: 0.3, Rate: 1, Lifetime: [1, 1], Speed: [2, 2], EmissionDirection: 'Top', Drag: 8, RotSpeed: [360, 360], LockedToPart: true },
+      { Name: 'Stars', ...T('star5'), Color: '#ffe04a', Size: [[0, 0], [0.3, 0.4], [1, 0]], LightEmission: 0.6, Rate: 4, Lifetime: [0.8, 1.2], Speed: [1.5, 2.5], EmissionDirection: 'Top', SpreadAngle: [50, 50], RotSpeed: [-200, 200], LockedToPart: true },
+    ],
+  },
+  {
+    name: 'Cartoon Run Dust', category: 'Cartoon & Anime', desc: 'Puffy cartoon cloud puffs behind running feet.', partSize: [2, 0.4, 1], trigger: CHAR({ attachTo: 'HumanoidRootPart' }),
+    layers: [
+      { Name: 'Puffs', ...T('cloud'), Color: '#f2ede4', Size: [[0, 0.6], [1, 1.8]], Transparency: [[0, 0.1], [0.7, 0.2], [1, 1]], LightInfluence: 0.8, Rate: 6, Lifetime: [0.4, 0.6], Speed: [1, 2], EmissionDirection: 'Back', Rotation: [0, 360], Drag: 3, Acceleration: [0, 1, 0] },
+    ],
+  },
+  {
+    name: 'Love-Struck Hearts', category: 'Cartoon & Anime', desc: 'Hearts popping up and bobbing above a character in love.', partSize: [0.5, 0.5, 0.5], trigger: CHAR({ attachTo: 'Head' }),
+    layers: [
+      { Name: 'Hearts', ...T('heart'), Color: ['#ff9ad0', '#ff2a6a'], Size: [[0, 0], [0.2, 0.9], [0.4, 0.7], [1, 0.6]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightEmission: 0.4, Rate: 2.5, Lifetime: [1.2, 1.6], Speed: [2, 3], EmissionDirection: 'Top', SpreadAngle: [35, 35], Rotation: [-15, 15] },
+    ],
+  },
+  {
+    name: 'Anime Power-Up', category: 'Cartoon & Anime', desc: 'Golden aura flames and crackling lightning — "this isn\'t even my final form".', partSize: [3, 5, 3], trigger: CHAR(), shopSlot: 'aura',
+    layers: [
+      { Name: 'Aura', ...T('rbx_fire'), Color: ['#fffbe0', '#ffd23a'], Size: [[0, 2.5], [1, 0.5]], Transparency: [[0, 0.3], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 40, Lifetime: [0.4, 0.6], Speed: [6, 9], EmissionDirection: 'Top', Shape: 'Cylinder', ShapeStyle: 'Surface', LockedToPart: true },
+      { Name: 'Sparks', ...T('lightning'), Color: '#fff6b0', Size: [1, 2], LightEmission: 1, Brightness: 3, Rate: 5, Lifetime: [0.08, 0.12], Speed: 0, Shape: 'Box', Rotation: [0, 360], LockedToPart: true },
+      { Name: 'Rising Bits', ...T('rbx_fire_sparks'), Color: '#ffe04a', Size: [0.3, 0], LightEmission: 1, Rate: 15, Lifetime: [0.8, 1.2], Speed: [4, 8], EmissionDirection: 'Top', Shape: 'Disc' },
+    ],
+  },
+
+  /* ------------------------------ Retro & Pixel ------------------------------ */
+  {
+    name: 'Pixel Coin Burst', category: 'Retro & Pixel', desc: '8-bit coins bursting out — upload the Pixel Coin texture for crisp pixels.', partSize: [1, 1, 1], trigger: TOUCH(0.2, 1), burstLoop: 1.5,
+    layers: [
+      { Name: 'Coins', ...T('px_coin'), Color: '#ffd23a', Size: 1, LightInfluence: 0.3, Lifetime: [0.9, 1.2], Speed: [14, 20], EmissionDirection: 'Top', SpreadAngle: [35, 35], Acceleration: [0, -40, 0], mode: 'burst', emitCount: 15, Enabled: false },
+      { Name: 'Sparkle', ...T('px_spark'), Color: '#ffffff', Size: [[0, 0], [0.5, 1], [1, 0]], LightEmission: 0.6, Lifetime: [0.3, 0.5], Speed: [3, 6], SpreadAngle: [180, 180], mode: 'burst', emitCount: 8, Enabled: false },
+    ],
+  },
+  {
+    name: 'Pixel Hearts', category: 'Retro & Pixel', desc: 'Blocky hearts floating up — health pickup or love.', partSize: [2, 0.5, 2],
+    layers: [
+      { Name: 'Hearts', ...T('px_heart'), Color: '#ff2a4a', Size: [[0, 0], [0.2, 0.8], [1, 0.8]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightInfluence: 0.3, Rate: 3, Lifetime: [1.5, 2], Speed: [2, 3], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Pixel Fire', category: 'Retro & Pixel', desc: 'Retro game campfire built from pixel flames.', partSize: [2, 0.4, 2],
+    layers: [
+      { Name: 'Flames', ...T('px_flame'), Color: [[0, '#fff36a'], [0.5, '#ff8a1a'], [1, '#d4200c']], Size: [[0, 1.4], [1, 0.4]], Transparency: [[0, 0], [0.8, 0.1], [1, 1]], LightEmission: 0.8, Rate: 14, Lifetime: [0.6, 0.9], Speed: [3, 5], EmissionDirection: 'Top', Shape: 'Box' },
+      { Name: 'Embers', ...T('px_block'), Color: '#ffb02a', Size: 0.25, LightEmission: 1, Rate: 6, Lifetime: [0.8, 1.2], Speed: [3, 6], EmissionDirection: 'Top', SpreadAngle: [20, 20], Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Pixel Explosion', category: 'Retro & Pixel', desc: 'Chunky 8-bit explosion with block debris.', partSize: [1, 1, 1], trigger: SCRIPTED, burstLoop: 2,
+    layers: [
+      { Name: 'Blast', ...T('px_puff'), point: true, Color: [[0, '#ffffff'], [0.3, '#ffd23a'], [0.7, '#ff5a1a'], [1, '#3a3a3a']], Size: [[0, 1], [0.4, 5], [1, 6]], Transparency: [[0, 0], [0.7, 0], [1, 1]], LightEmission: 0.6, Lifetime: [0.6, 0.8], Speed: [3, 6], SpreadAngle: [180, 180], mode: 'burst', emitCount: 8, Enabled: false },
+      { Name: 'Blocks', ...T('px_block'), point: true, Color: ['#ffb02a', '#5a5a5a'], Size: [0.6, 0.3], Lifetime: [0.8, 1.2], Speed: [14, 24], SpreadAngle: [180, 180], Acceleration: [0, -40, 0], mode: 'burst', emitCount: 30, Enabled: false },
+    ],
+  },
+  {
+    name: 'Pixel Sparkle Trail', category: 'Retro & Pixel', desc: 'Retro star-power sparkles trailing a running character.', partSize: [2, 3, 1], trigger: CHAR(),
+    layers: [
+      { Name: 'Sparkles', ...T('px_spark'), Color: [[0, '#ff3a3a'], [0.25, '#ffd23a'], [0.5, '#3aff6a'], [0.75, '#3ab8ff'], [1, '#b03aff']], Size: [[0, 0.8], [1, 0]], LightEmission: 0.8, Rate: 15, Lifetime: [0.5, 0.8], Speed: [0.5, 1.5], Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Pixel Smoke Puffs', category: 'Retro & Pixel', desc: 'Blocky smoke puffs — chimneys, landing dust, vanish poofs.', partSize: [1, 0.5, 1],
+    layers: [
+      { Name: 'Puffs', ...T('px_puff'), Color: ['#ffffff', '#9a9a9a'], Size: [[0, 0.6], [1, 2.4]], Transparency: [[0, 0.1], [0.7, 0.3], [1, 1]], LightInfluence: 0.8, Rate: 4, Lifetime: [1.5, 2], Speed: [2, 3], EmissionDirection: 'Top', SpreadAngle: [10, 10] },
+    ],
+  },
+  {
+    name: '8-Bit Power-Up', category: 'Retro & Pixel', desc: 'Stars and pixel blocks shoot up when a player grabs a power-up.', partSize: [2, 2, 2], trigger: TOUCH(0.3, 2), burstLoop: 1.8,
+    layers: [
+      { Name: 'Stars', ...T('px_star'), point: true, Color: '#ffe04a', Size: [[0, 0], [0.2, 1.2], [1, 0.6]], LightEmission: 0.5, Lifetime: [0.8, 1.2], Speed: [10, 16], EmissionDirection: 'Top', SpreadAngle: [50, 50], Acceleration: [0, -10, 0], mode: 'burst', emitCount: 10, Enabled: false },
+      { Name: 'Blocks', ...T('px_block'), point: true, Color: [[0, '#ff3a3a'], [0.5, '#3ab8ff'], [1, '#3aff6a']], Size: 0.4, LightEmission: 0.6, Lifetime: [0.5, 0.8], Speed: [6, 12], SpreadAngle: [180, 180], mode: 'burst', emitCount: 24, Enabled: false },
+    ],
+  },
+  {
+    name: 'Pixel Rain', category: 'Retro & Pixel', desc: 'Falling blocky raindrops for retro-style worlds.', partSize: [40, 1, 40],
+    layers: [
+      { Name: 'Drops', ...T('px_block'), Color: '#6ab8ff', Size: 0.2, Squash: -2, Transparency: 0.2, Rate: 150, Lifetime: [1.2, 1.4], Speed: [30, 30], EmissionDirection: 'Bottom', Shape: 'Box' },
+    ],
+  },
+
+  /* ------------------------------ Holidays ------------------------------ */
+  {
+    name: 'Halloween Pumpkin Rain', category: 'Holidays', desc: 'Grinning jack-o\'-lanterns tumbling from the sky with purple mist.', partSize: [30, 1, 30],
+    layers: [
+      { Name: 'Pumpkins', ...T('pumpkin'), Color: '#ff8a1a', Size: 1.2, LightEmission: 0.3, Rate: 6, Lifetime: [4, 5], Speed: [5, 7], EmissionDirection: 'Bottom', Shape: 'Box', Rotation: [0, 360], RotSpeed: [-60, 60] },
+      { Name: 'Mist', ...T('rbx_smoke'), Color: '#6a3aa0', Size: [[0, 4], [1, 8]], Transparency: [[0, 1], [0.4, 0.8], [1, 1]], Rate: 4, Lifetime: [4, 6], Speed: [3, 5], EmissionDirection: 'Bottom', Shape: 'Box', Rotation: [0, 360] },
+    ],
+  },
+  {
+    name: 'Christmas Gift Shower', category: 'Holidays', desc: 'Presents and snowflakes raining down — great for a Christmas event.', partSize: [30, 1, 30],
+    layers: [
+      { Name: 'Gifts', ...T('gift'), Color: [[0, '#ff2a3a'], [0.5, '#2aff5a'], [1, '#ffd23a']], Size: 1.2, LightInfluence: 0.5, Rate: 6, Lifetime: [4, 5], Speed: [5, 7], EmissionDirection: 'Bottom', Shape: 'Box', Rotation: [-25, 25], RotSpeed: [-40, 40] },
+      { Name: 'Snow', ...T('snowflake'), Color: '#ffffff', Size: 0.4, Rate: 30, Lifetime: [5, 7], Speed: [2, 4], EmissionDirection: 'Bottom', Shape: 'Box', Rotation: [0, 360], RotSpeed: [-30, 30] },
+    ],
+  },
+  {
+    name: 'Christmas Tree Twinkle', category: 'Holidays', desc: 'Coloured fairy lights twinkling over a tree. Size the Part to the tree.', partSize: [6, 10, 6],
+    layers: [
+      { Name: 'Lights', ...T('rbx_ff_glow'), Color: [[0, '#ff2a3a'], [0.33, '#ffd23a'], [0.66, '#2ab8ff'], [1, '#2aff5a']], Size: [[0, 0], [0.5, 0.8], [1, 0]], LightEmission: 1, Brightness: 2, Rate: 25, Lifetime: [1, 2], Speed: 0, Shape: 'Cylinder', ShapeStyle: 'Surface' },
+      { Name: 'Star Sparkle', ...T('star4'), Color: '#fff3b0', Size: [[0, 0], [0.5, 0.5], [1, 0]], LightEmission: 1, Rate: 6, Lifetime: [0.6, 1], Speed: 0, Shape: 'Cylinder', ShapeStyle: 'Surface' },
+    ],
+  },
+  {
+    name: 'Easter Egg Hunt', category: 'Holidays', desc: 'Pastel eggs pop out when a hidden egg is found.', partSize: [1.5, 1.5, 1.5], trigger: PROMPT('Collect egg', 0.5, 3), burstLoop: 2,
+    layers: [
+      { Name: 'Eggs', ...T('egg'), point: true, Color: [[0, '#ffb3d9'], [0.33, '#b3e6ff'], [0.66, '#d9ffb3'], [1, '#fff0b3']], Size: [[0, 0.6], [1, 0.4]], LightInfluence: 0.4, Lifetime: [1, 1.4], Speed: [10, 16], EmissionDirection: 'Top', SpreadAngle: [40, 40], RotSpeed: [-200, 200], Acceleration: [0, -30, 0], mode: 'burst', emitCount: 12, Enabled: false },
+      { Name: 'Sparkle', ...T('rbx_sparkles'), point: true, Color: '#ffffff', Size: [[0, 0.8], [1, 0]], LightEmission: 1, Lifetime: [0.5, 0.8], Speed: [4, 8], SpreadAngle: [180, 180], mode: 'burst', emitCount: 20, Enabled: false },
+    ],
+  },
+  {
+    name: 'Lucky Clovers', category: 'Holidays', desc: 'St Patrick\'s Day clovers and gold glitter swirling up.', partSize: [6, 0.5, 6],
+    layers: [
+      { Name: 'Clovers', ...T('clover'), Color: ['#3aff6a', '#13a84a'], Size: [[0, 0], [0.2, 0.7], [1, 0.6]], Transparency: [[0, 0], [0.8, 0], [1, 1]], LightInfluence: 0.5, Rate: 5, Lifetime: [2, 3], Speed: [2, 4], EmissionDirection: 'Top', Shape: 'Box', Rotation: [0, 360], RotSpeed: [-90, 90] },
+      { Name: 'Gold', ...T('rbx_sparkles'), Color: '#ffd23a', Size: [[0, 0], [0.5, 0.4], [1, 0]], LightEmission: 1, Rate: 10, Lifetime: [1, 2], Speed: [2, 4], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+  {
+    name: 'Candy Cane Swirl', category: 'Holidays', desc: 'Candy canes and peppermint sparkles spinning around a character.', partSize: [3, 4, 3], trigger: CHAR(),
+    layers: [
+      { Name: 'Canes', ...T('candy'), Color: '#ff4a5a', Size: 0.8, Transparency: [[0, 1], [0.15, 0], [0.85, 0], [1, 1]], LightInfluence: 0.4, Rate: 3, Lifetime: [1.5, 2], Speed: [1, 2], EmissionDirection: 'Top', Shape: 'Cylinder', ShapeStyle: 'Surface', RotSpeed: [-120, 120] },
+      { Name: 'Peppermint', ...T('star4'), Color: ['#ffffff', '#ff8a9a'], Size: [[0, 0], [0.5, 0.5], [1, 0]], LightEmission: 0.8, Rate: 8, Lifetime: [0.8, 1.2], Speed: 0.5, Shape: 'Cylinder', ShapeStyle: 'Surface' },
+    ],
+  },
+  {
+    name: 'Lantern Festival', category: 'Holidays', desc: 'Warm red-gold lanterns drifting up into the night sky (Lunar New Year, Mid-Autumn).', partSize: [30, 1, 30],
+    layers: [
+      { Name: 'Lanterns', ...T('soft_glow'), Color: ['#ffd27a', '#ff5a2a'], Size: [[0, 0], [0.1, 1.4], [0.9, 1.2], [1, 0]], Squash: 0.4, LightEmission: 1, Brightness: 2, Rate: 4, Lifetime: [10, 14], Speed: [2, 3], EmissionDirection: 'Top', Shape: 'Box', Acceleration: [0.3, 0, 0] },
+    ],
+  },
+  {
+    name: 'Diwali Diya Lights', category: 'Holidays', desc: 'Warm flickering lamp glows with golden sparkles.', partSize: [8, 0.4, 8],
+    layers: [
+      { Name: 'Glow', ...T('rbx_ff_glow'), Color: '#ffb02a', Size: [[0, 0.6], [0.5, 1], [1, 0.6]], Transparency: 0.3, LightEmission: 1, Brightness: 2, Rate: 10, Lifetime: [1, 1.5], Speed: 0, Shape: 'Box', ShapeStyle: 'Surface', EmissionDirection: 'Top' },
+      { Name: 'Sparkles', ...T('rbx_sparkles'), Color: ['#fff3b0', '#ffb02a'], Size: [[0, 0], [0.5, 0.4], [1, 0]], LightEmission: 1, Rate: 12, Lifetime: [1, 2], Speed: [1, 2], EmissionDirection: 'Top', Shape: 'Box' },
+    ],
+  },
+);
+
+// Seasonal presets live in the Holidays pack too; vehicle drift smoke can be recoloured in the colour shop.
+for (const p of PRESETS) {
+  if (p.category === 'Seasonal') p.category = 'Holidays';
+  if (p.shopSlot) { p.trigger = { ...(p.trigger || {}), shop: p.shopSlot }; delete p.shopSlot; }
+  if (/^(Tire Smoke \(Drift\)|Drift Smoke \(Coloured\))$/.test(p.name)) p.trigger = { ...p.trigger, shop: 'smoke' };
+}
+PRESET_CATEGORIES.splice(PRESET_CATEGORIES.indexOf('Seasonal'), 1);
+PRESET_CATEGORIES.push('Water', 'Cartoon & Anime', 'Retro & Pixel', 'Holidays');
 </script>
 <script>
 'use strict';
@@ -3502,9 +5059,17 @@ class Sim {
     this.emitterVel = dt > 0 ? V3.scale(V3.sub(this.emitterPos, prev), 1 / dt) : [0, 0, 0];
     if (V3.len(this.emitterVel) > 200) this.emitterVel = [0, 0, 0];
     // Drive: the camera rides with the car, so the world (and detached particles) streams backwards.
-    this.driveShift = opts.drive ? DRIVE_SPEED * dt : 0;
+    const sp = this.speedState(effect);
+    this.driveShift = opts.drive ? (sp ? sp.speed : DRIVE_SPEED) * dt : 0;
     this.driveOffset = ((this.driveOffset || 0) + this.driveShift) % 2;
-    if (opts.drive) this.emitterVel = [0, 0, -DRIVE_SPEED];
+    if (opts.drive) this.emitterVel = [0, 0, -(sp ? sp.speed : DRIVE_SPEED)];
+    // Speed effects: rate and size follow the simulated speed; bursts fire on reaching top speed
+    this.sizeK = sp && sp.on && effect.trigger.scaleSize ? 0.4 + 0.6 * sp.k : 1;
+    let topBurst = false;
+    if (sp) {
+      topBurst = sp.k >= 1 && !this.atTop;
+      if (sp.k >= 1) this.atTop = true; else if (sp.k < 0.85) this.atTop = false;
+    }
 
     const ids = new Set(effect.layers.map((l) => l.id));
     for (const id of this.state.keys()) if (!ids.has(id)) this.state.delete(id);
@@ -3516,11 +5081,13 @@ class Sim {
       const ldt = dt * U.clamp(L.TimeScale, 0, 10);
       if (!L.hidden) {
         if (L.mode === 'continuous' && L.Enabled) {
-          s.acc += L.Rate * ldt;
+          s.acc += L.Rate * ldt * (sp ? (sp.on ? 0.15 + 0.85 * sp.k : 0) : 1);
           let n = Math.floor(s.acc);
           s.acc -= n;
           n = Math.min(n, 400);
           for (let i = 0; i < n; i++) this.spawn(L, s, effect);
+        } else if (L.mode === 'burst' && sp) {
+          if (topBurst && opts.autoBurst) this.emit(L, s, effect, L.emitCount);
         } else if (L.mode === 'burst' && opts.autoBurst) {
           const d = L.emitDelay, loop = Math.max(0.1, effect.burstLoop);
           if (this.time >= d) {
@@ -3535,6 +5102,18 @@ class Sim {
       }
       this.update(L, s, ldt, this.driveShift);
     }
+  }
+  /**
+   * "React to car speed" preview: the car speeds up to just past top speed over 6 s, holds,
+   * then slows down (10 s loop). Returns null for other behaviours.
+   */
+  speedState(effect) {
+    const t = effect.trigger;
+    if (!t || t.mode !== 'speed') return null;
+    const c = (this.time + 4) % 10, top = t.maxSpeed * 1.1; // start fairly fast so the effect shows straight away
+    const speed = c < 6 ? top * (c / 6) : c < 7 ? top : top * Math.max(0, 1 - (c - 7) / 3);
+    const k = U.clamp((speed - t.minSpeed) / Math.max(t.maxSpeed - t.minSpeed, 1), 0, 1);
+    return { speed, k, on: speed >= t.minSpeed };
   }
   emit(L, s, effect, n) { n = Math.min(n, 2000); for (let i = 0; i < n; i++) this.spawn(L, s, effect); }
 
@@ -3855,18 +5434,9 @@ class ParticleView {
     gl.drawArrays(gl.LINES, 0, out.length / 7);
   }
 
-  /** 0..1 brightness and colour of the neon plate at time t (same maths as the Roblox script). */
+  /** 0..1 brightness and colour of the whole neon plate at time t (same maths as the Roblox script). */
   static neonState(u, t) {
-    const s = t * u.animSpeed;
-    let k = 1, col = u.color;
-    switch (u.anim) {
-      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
-      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
-      case 'flicker': k = ((Math.floor(s * 12) * 2654435761) >>> 0) % 100 < 9 ? 0.3 : 1; break;
-      case 'strobe': k = (s * 4) % 1 < 0.5 ? 1 : 0.1; break;
-      case 'rainbow': col = U.hsvToRgb([(s * 0.25) % 1, 0.8, 1]); break;
-    }
-    return { k, col };
+    return Neon.state(u.anim, t * u.animSpeed, 0.5, 0.5, u.color, u.color2);
   }
 
   _quad(B, o, c, ax, az, uv, rgb, a) {
@@ -3882,29 +5452,34 @@ class ParticleView {
   _drawNeon() {
     const E = this.effect, u = E && E.underglow;
     if (!u || !u.enabled) return;
-    const gl = this.gl;
+    const gl = this.gl, s = this.sim.time * u.animSpeed;
+    const pattern = Neon.isPattern(u);
     const { k, col } = ParticleView.neonState(u, this.sim.time);
     const p = this.sim.emitterPos, hx = E.partSize[0] / 2, hz = E.partSize[2] / 2;
     const B = new Float32Array(54);
     gl.uniform1f(this.uEmit, 1);
     if (u.light && u.lightBrightness > 0) {
-      const spillA = U.clamp(0.25 * k * u.lightBrightness / 3, 0, 0.8);
-      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, col, spillA);
+      const L = Neon.lightState(u.anim, s, u.color, u.color2);
+      const spillA = U.clamp(0.25 * L.k * u.lightBrightness / 3, 0, 0.8);
+      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, L.col, spillA);
       gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text, Neon.spill(u.design, u.text)));
       gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
-    const rgb = col.map((v) => v * Math.max(0.2, u.brightness / 2));
-    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * k, 0, 1));
-    gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
+    const glow = Math.max(0.2, u.brightness / 2);
+    // Chase / scanner / police light each piece separately: draw a freshly coloured canvas
+    const rgb = pattern ? [glow, glow, glow] : col.map((v) => v * glow);
+    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * (pattern ? 1 : k), 0, 1));
+    gl.bindTexture(gl.TEXTURE_2D, pattern ? this._canvasTexture('neonanim', Neon.animCanvas(u, s), true)
+      : this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
     gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
-  _canvasTexture(key, src) {
+  _canvasTexture(key, src, dynamic = false) {
     const gl = this.gl;
     let rec = this.texCache[key];
-    if (rec && rec.src === src) return rec.tex;
+    if (rec && rec.src === src && !dynamic) return rec.tex;
     if (!rec) { rec = { tex: gl.createTexture() }; this.texCache[key] = rec; }
     rec.src = src;
     gl.bindTexture(gl.TEXTURE_2D, rec.tex);
@@ -3961,7 +5536,7 @@ class ParticleView {
         const q = it.q;
         if (it.d < 0.1) continue;
         const t = q.age / q.life;
-        const size = Model.evalNum(L.Size, t, q.rs);
+        const size = Model.evalNum(L.Size, t, q.rs) * (L.mode === 'burst' ? 1 : this.sim.sizeK || 1);
         if (size <= 0) continue;
         const alpha = 1 - U.clamp(Model.evalNum(L.Transparency, t, q.rt), 0, 1);
         if (alpha <= 0.002) continue;
@@ -4110,7 +5685,7 @@ const Export = (() => {
   /** Burst layers are always exported disabled; continuous ones only start on for some behaviours. */
   const enabledFor = (L, startOn) => L.mode !== 'burst' && L.Enabled && startOn;
 
-  function emitterXml(L, ind, startOn = true) {
+  function emitterXml(L, ind, startOn = true, shop = 0) {
     const p = [];
     const add = (s) => p.push(ind + '\t\t' + s);
     add(`<string name="Name">${esc(L.Name)}</string>`);
@@ -4129,7 +5704,8 @@ const Export = (() => {
         case 'vec3': add(`<Vector3 name="${k}"><X>${f(v[0])}</X><Y>${f(v[1])}</Y><Z>${f(v[2])}</Z></Vector3>`); break;
       }
     }
-    if (L.mode === 'burst') add(`<BinaryString name="AttributesSerialize">${attributesBlob({ EmitCount: L.emitCount, EmitDelay: L.emitDelay })}</BinaryString>`);
+    const attrs = { ...(L.mode === 'burst' ? { EmitCount: L.emitCount, EmitDelay: L.emitDelay } : {}), ...(shop ? { ParticlyShop: shop } : {}) };
+    if (Object.keys(attrs).length) add(`<BinaryString name="AttributesSerialize">${attributesBlob(attrs)}</BinaryString>`);
     return `${ind}<Item class="ParticleEmitter" referent="${ref()}">\n${ind}\t<Properties>\n${p.join('\n')}\n${ind}\t</Properties>\n${ind}</Item>`;
   }
 
@@ -4141,9 +5717,9 @@ const Export = (() => {
   }
 
   /** Point layers sit in their own Attachment so they emit from the part's centre. */
-  function layerXml(L, ind, startOn = true) {
-    if (!L.point) return emitterXml(L, ind, startOn);
-    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn)}\n${ind}</Item>`;
+  function layerXml(L, ind, startOn = true, shop = 0) {
+    if (!L.point) return emitterXml(L, ind, startOn, shop);
+    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn, shop)}\n${ind}</Item>`;
   }
 
   /* ---------- car neon (SurfaceGui on the Top face + SurfaceLight shining down) ---------- */
@@ -4176,7 +5752,8 @@ const Export = (() => {
         ], deco));
       });
     }
-    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1 })}</BinaryString>`;
+    const shop = Behaviour.shopSlot(effect);
+    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1, ...(shop ? { ParticlyShop: shop } : {}) })}</BinaryString>`;
     const out = [item('SurfaceGui', ind, [
       `<string name="Name">ParticlyNeon</string>`, `<token name="Face">1</token>`, `<bool name="Enabled">${on}</bool>`,
       `<float name="LightInfluence">0</float>`, `<float name="Brightness">${f(u.brightness)}</float>`,
@@ -4196,7 +5773,7 @@ const Export = (() => {
   /** Emitters + ParticlyControl + behaviour scripts, as children of a Part or Attachment. */
   function containerKids(effect, ind, withNeon = false) {
     const startOn = Behaviour.startsEnabled(effect);
-    const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn));
+    const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn, Behaviour.shopSlot(effect)));
     if (withNeon) kids.push(...neonXml(effect, ind, startOn));
     for (const sc of Behaviour.containerScripts(effect)) kids.push(scriptXml(sc.cls, sc.name, sc.source, ind, sc.runContext));
     return kids;
@@ -4204,7 +5781,7 @@ const Export = (() => {
 
   /** "Attach to every character": a Script for StarterCharacterScripts holding emitter templates. */
   function characterXml(effect, ind) {
-    const emitters = exportLayers(effect).map((L) => layerXml(L, ind + '\t\t', true));
+    const emitters = exportLayers(effect).map((L) => layerXml(L, ind + '\t\t', true, Behaviour.shopSlot(effect)));
     const folder = `${ind}\t<Item class="Folder" referent="${ref()}">\n${ind}\t\t<Properties>\n${ind}\t\t\t<string name="Name">Emitters</string>\n${ind}\t\t</Properties>\n${emitters.join('\n')}\n${ind}\t</Item>`;
     const control = scriptXml('ModuleScript', 'ParticlyControl', Behaviour.CONTROL_SOURCE, ind + '\t');
     return scriptXml('Script', 'Particly_' + U.safeName(effect.name), Behaviour.characterSource(effect), ind, null, [folder, control]);
@@ -4226,7 +5803,7 @@ const Export = (() => {
       `<Vector3 name="size"><X>${f(s[0])}</X><Y>${f(s[1])}</Y><Z>${f(s[2])}</Z></Vector3>`,
       `<CoordinateFrame name="CFrame"><X>${f(pos[0])}</X><Y>${f(pos[1])}</Y><Z>${f(pos[2])}</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>`,
       // Vehicle boosts: this Part welds itself to the nearest car part at runtime
-      mode === 'vehicle' ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyAutoWeld: 1 })}</BinaryString>` : null,
+      Behaviour.autoWelds(effect) ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyAutoWeld: 1 })}</BinaryString>` : null,
     ].filter(Boolean).map((x) => ind + '\t\t' + x).join('\n');
     return `${ind}<Item class="Part" referent="${ref()}">\n${ind}\t<Properties>\n${props}\n${ind}\t</Properties>\n${kids.join('\n')}\n${ind}</Item>`;
   }
@@ -4248,7 +5825,7 @@ const Export = (() => {
     if (effect.trigger.mode === 'character') return wrap(characterXml(effect, '\t'));
     const c = opts.container || 'part';
     if (c === 'attachment') return wrap(attachmentXml(effect, '\t'));
-    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t', Behaviour.startsEnabled(effect))).join('\n'));
+    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t', Behaviour.startsEnabled(effect), Behaviour.shopSlot(effect))).join('\n'));
     return wrap(partXml(effect, {}, [0, effect.partSize[1] / 2 + 3, 0], '\t'));
   }
 
@@ -4329,6 +5906,7 @@ end`;
 local NEON = {
 	Image = ${u.imageId ? lStr(u.imageId) : 'nil'},
 	Color = ${lCol(u.color)},
+	Color2 = ${lCol(u.color2)}, -- second colour (police / two-colour fade)
 	Brightness = ${f(u.brightness)},
 	Opacity = ${f(u.opacity)},
 	Light = ${u.light && u.lightBrightness > 0 ? 'true' : 'false'},
@@ -4350,6 +5928,9 @@ ${rows}
 	gui.CanvasSize = Vector2.new(${NEON_W}, ${NEON_H})
 	gui.Enabled = on
 	gui:SetAttribute("ParticlyNeon", 1)
+	if SHOP_SLOT then
+		gui:SetAttribute("ParticlyShop", SHOP_SLOT) -- players can recolour it in the Particly colour shop
+	end
 	if NEON.Image then
 		local image = Instance.new("ImageLabel")
 		image.Name = "Design"
@@ -4395,12 +5976,20 @@ ${rows}
 		light.Shadows = false
 		light.Enabled = on
 		light:SetAttribute("ParticlyNeon", 1)
+		if SHOP_SLOT then
+			light:SetAttribute("ParticlyShop", SHOP_SLOT)
+		end
 		light.Parent = part
 	end
 	return gui, light
 end`;
     return { table, fn };
   }
+
+  const shopLine = (effect) => {
+    const id = Behaviour.shopSlot(effect);
+    return `local SHOP_SLOT = ${id || 'nil'} -- colour shop slot${id ? ` (${SHOP_SLOTS[effect.trigger.shop].label}): players can recolour this effect` : ': not recolourable'}`;
+  };
 
   function commandBar(effect) {
     const s = effect.partSize;
@@ -4409,7 +5998,10 @@ end`;
     const neon = neonLua(effect);
     const scripts = character ? [] : Behaviour.containerScripts(effect);
     const scriptRows = scripts.map((sc) => `\t{ Class = ${lStr(sc.cls)}, Name = ${lStr(sc.name)}, RunContext = ${sc.runContext ? lStr(sc.runContext) : 'nil'}, Source = ${longStr(sc.source)} },`).join('\n');
+    const carHow = '--   * Select the car\'s exhaust Part(s) first (inside a model with a VehicleSeat), or\n--   * select nothing to create a Part, then drag it into your car model at the exhaust.';
     const how = {
+      speed: carHow.replace(/exhaust Part/, 'exhaust / wheel Part').replace(/at the exhaust/, 'where it belongs'),
+      impact: carHow.replace(/exhaust Part/, 'bumper Part').replace(/at the exhaust/, 'at the bumper'),
       vehicle: '--   * Select the car\'s exhaust Part(s) first (inside a model with a VehicleSeat), or\n--   * select nothing to create a Part, then drag it into your car model at the exhaust.',
       character: '--   * Creates a Script in StarterPlayer > StarterCharacterScripts: every character gets the effect.',
     }[mode] || '--   * Select Part(s) or Attachment(s) first to add the effect to them, or\n--   * select nothing to create a new invisible Part in front of the camera.';
@@ -4422,6 +6014,7 @@ ${how}
 local EFFECT_NAME = ${lStr(effect.name)}
 local PART_SIZE = Vector3.new(${f(s[0])}, ${f(s[1])}, ${f(s[2])})
 local MODE = ${lStr(mode)}
+${shopLine(effect)}
 
 local EMITTERS = ${emittersTable(effect, '', Behaviour.startsEnabled(effect))}
 
@@ -4448,6 +6041,9 @@ local function addEmitters(parent)
 		if def.Burst then
 			emitter:SetAttribute("EmitCount", def.Burst.Count)
 			emitter:SetAttribute("EmitDelay", def.Burst.Delay)
+		end
+		if SHOP_SLOT then
+			emitter:SetAttribute("ParticlyShop", SHOP_SLOT)
 		end
 		local holder = parent
 		if def.Point and parent:IsA("BasePart") then
@@ -4519,7 +6115,7 @@ else
 		part.CastShadow = false
 		part.Transparency = 1
 		part.CFrame = CFrame.new(camera.CFrame.Position + camera.CFrame.LookVector * 20)
-		if MODE == "vehicle" then
+		if MODE == "vehicle" or MODE == "speed" or MODE == "impact" then
 			part:SetAttribute("ParticlyAutoWeld", 1) -- welds itself to the nearest car part at runtime
 		end
 		build(part)
@@ -4576,6 +6172,8 @@ Effect.PartSize = Vector3.new(${f(s[0])}, ${f(s[1])}, ${f(s[2])})
 Effect.MaxLifetime = ${f(maxLifetime(effect))}
 Effect.BurstLoop = ${f(effect.burstLoop)} -- suggested seconds between bursts if you loop them
 
+${shopLine(effect)}
+
 Effect.Emitters = ${emittersTable(effect)}
 
 ${neon.table}
@@ -4595,6 +6193,9 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 			emitter:SetAttribute("EmitCount", def.Burst.Count)
 			emitter:SetAttribute("EmitDelay", def.Burst.Delay)
 		end
+		if SHOP_SLOT then
+			emitter:SetAttribute("ParticlyShop", SHOP_SLOT)
+		end
 		local holder = parent
 		if def.Point and parent:IsA("BasePart") then
 			holder = Instance.new("Attachment")
@@ -4607,7 +6208,7 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 	if NEON and parent:IsA("BasePart") then
 		local gui, light = buildNeon(parent, startOn ~= false)
 		if NEON.Anim ~= "none" and game:GetService("RunService"):IsClient() then
-			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed) -- animations run on the client
+			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed, NEON.Color2) -- animations run on the client
 		end
 	end` : ''}
 	return created
@@ -4688,6 +6289,52 @@ return Effect
 `;
   }
 
+  /* --------------------------- colour shop kit --------------------------- */
+  /** Folder with the colour shop's server + client scripts (drop into Workspace). */
+  function shopRbxmx() {
+    refCounter = 0;
+    const kids = [
+      scriptXml('Script', 'ColourShopServer', Shop.serverSource(), '\t\t', 'Server'),
+      scriptXml('Script', 'ColourShopClient', Shop.clientSource(), '\t\t', 'Client'),
+    ];
+    return wrap(`\t<Item class="Folder" referent="${ref()}">\n\t\t<Properties>\n\t\t\t<string name="Name">ParticlyColourShop</string>\n\t\t</Properties>\n${kids.join('\n')}\n\t</Item>`);
+  }
+  function shopCommandBar() {
+    return `-- Particly colour shop installer. Studio > View > Command Bar: paste and press Enter.
+-- Adds Workspace.ParticlyColourShop (server + client scripts). Undo with Ctrl+Z.
+local SERVER_SOURCE = ${longStr(Shop.serverSource())}
+local CLIENT_SOURCE = ${longStr(Shop.clientSource())}
+
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local recording
+pcall(function()
+	recording = ChangeHistoryService:TryBeginRecording("Insert Particly colour shop")
+end)
+local old = workspace:FindFirstChild("ParticlyColourShop")
+if old then
+	old:Destroy()
+end
+local folder = Instance.new("Folder")
+folder.Name = "ParticlyColourShop"
+local server = Instance.new("Script")
+server.Name = "ColourShopServer"
+server.RunContext = Enum.RunContext.Server
+server.Source = SERVER_SOURCE
+server.Parent = folder
+local client = Instance.new("Script")
+client.Name = "ColourShopClient"
+client.RunContext = Enum.RunContext.Client
+client.Source = CLIENT_SOURCE
+client.Parent = folder
+folder.Parent = workspace
+game:GetService("Selection"):Set({ folder })
+if recording then
+	ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+end
+print("[Particly] Colour shop added: Workspace.ParticlyColourShop")
+`;
+  }
+
   /* --------------------------- JSON / share --------------------------- */
   function json(effect) {
     return JSON.stringify({ particly: 1, type: 'effect', effect }, null, 2);
@@ -4704,7 +6351,7 @@ return Effect
     return `${base}#fx=${z ? 'z' : 'r'}${U.bytesToB64url(bytes)}`;
   }
 
-  return { warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, json, libraryJson, shareLink, hasBurst, exportLayers };
+  return { shopRbxmx, shopCommandBar, warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, json, libraryJson, shareLink, hasBurst, exportLayers };
 })();
 </script>
 <script>
@@ -5678,7 +7325,7 @@ function loadEffect(effect, { fresh = true } = {}) {
     App.view.reset();
     App.view.setEffect(App.effect);
     // Vehicle boosts preview best "driving": switch Drive on for them (and off again for others)
-    const drive = App.effect.trigger.mode === 'vehicle';
+    const drive = App.effect.trigger.mode === 'vehicle' || App.effect.trigger.mode === 'speed';
     if (drive !== App.view.settings.drive) {
       App.view.settings.drive = drive;
       App.view.settings.move = false;
@@ -5767,6 +7414,16 @@ function renderNeonCard() {
     field('Opacity', '', num('opacity', 0.05, 1, 0.01)),
     field('Animation', 'Animated on each player\'s screen by a small client script', el('div', { class: 'row gap' }, anim)),
   );
+  if (NEON_TWO_COLOUR.includes(u.anim)) {
+    const c2 = el('input', { type: 'color', value: U.rgbToHex(u.color2) });
+    c2.addEventListener('input', () => { u.color2 = U.hexToRgb(c2.value); });
+    c2.addEventListener('change', () => set('color2', U.hexToRgb(c2.value)));
+    const sw2 = el('div', { class: 'seq-tools' }, NEON_SWATCHES.map((h) => el('button', { style: { background: h, width: '18px', height: '16px', padding: 0 }, title: h, onclick: () => set('color2', U.hexToRgb(h)) })));
+    rows.push(field('Colour 2', u.anim === 'police' ? 'Right side / back of the car (colour 1 is the left / front)' : 'Fades between colour 1 and this colour', el('div', { class: 'row gap' }, c2, sw2)));
+  }
+  if (['chase', 'scanner', 'police'].includes(u.anim) && !Neon.isFrameDesign(u.design)) {
+    rows.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Chasing / scanner / police patterns light each LED or tube separately — pick an LED, tube or strip design (an image design blinks as a whole).'));
+  }
   if (u.anim !== 'none') rows.push(field('Speed', '', num('animSpeed', 0.1, 5, 0.05)));
   rows.push(field('Road light', 'SurfaceLight shining down so the road takes the neon colour', el('div', { class: 'row gap' }, light, u.light ? num('lightBrightness', 0, 15, 0.1) : null)));
   if (u.light) rows.push(field('Light range', 'Studs', num('lightRange', 2, 30, 0.5)));
@@ -5850,15 +7507,35 @@ function behaviourEditor(E) {
     if (!T.toggle) extra.push(field('Max boost (s)', '0 = boost as long as the key is held', num('maxSeconds', 0, 30, 0.5)));
     extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'Tip: tick "Drive" in the preview bar to see it streaming behind a moving car. Exhausts emit from the part\'s Back face (+Z).'));
   }
+  const check = (k, label, title) => {
+    const c = el('input', { type: 'checkbox', checked: T[k] });
+    c.addEventListener('change', () => set(k, c.checked));
+    return el('label', { class: 'vt', style: { color: 'var(--text)' }, title }, c, label);
+  };
+  if (T.mode === 'speed') {
+    extra.push(field('Reacts to', 'Car speed: exhaust flames, wind, tyre smoke. Sideways slide: drift smoke and skid marks.', select('measure', Object.keys(SPEED_MEASURES), SPEED_MEASURES)));
+    extra.push(field('Starts at', 'Studs per second where the effect switches on (a typical car does 50–150)', num('minSpeed', 0, 1000, 1)));
+    extra.push(field('Full at', 'Studs per second for full strength. Burst layers fire when this speed is reached (sonic boom).', num('maxSpeed', 1, 2000, 1)));
+    extra.push(field('Grow', 'Particles get bigger with speed too (not just more of them)', check('scaleSize', 'bigger when faster')));
+    extra.push(el('div', { class: 'hint', style: { margin: 0 } }, 'The preview car speeds up to top speed and slows down again every 10 s.'));
+  }
+  if (T.mode === 'impact') {
+    extra.push(field('Crash at', 'Sudden speed change in studs/s that counts as a crash (lower = more sensitive)', num('impact', 5, 500, 1)));
+    extra.push(field('Play for (s)', 'How long continuous layers stay on after a crash', num('duration', 0.1, 30, 0.1)));
+    extra.push(field('Cooldown (s)', 'Wait before it can trigger again', num('cooldown', 0, 30, 0.1)));
+  }
   if (T.mode === 'touch' || T.mode === 'prompt') {
     if (T.mode === 'prompt') {
       const t = el('input', { type: 'text', value: T.actionText });
       t.addEventListener('change', () => set('actionText', t.value || 'Activate'));
       extra.push(field('Prompt text', 'Text shown on the ProximityPrompt', t));
     }
-    extra.push(field('Play for (s)', 'How long continuous layers stay on each time', num('duration', 0.1, 30, 0.1)));
+    extra.push(field('Keep on', 'Continuous layers run all the time and each touch / use only fires the burst layers (checkpoint gates, boost pads)', check('keepOn', 'glow always, bursts on use')));
+    if (!T.keepOn) extra.push(field('Play for (s)', 'How long continuous layers stay on each time', num('duration', 0.1, 30, 0.1)));
     extra.push(field('Cooldown (s)', 'Wait before it can trigger again', num('cooldown', 0, 30, 0.1)));
   }
+  extra.push(field('Colour shop', 'Lets players recolour this effect in the in-game colour shop (Export › Colour shop adds the shop to your game)',
+    select('shop', Object.keys(SHOP_SLOTS), Object.fromEntries(Object.entries(SHOP_SLOTS).map(([k, v]) => [k, k === 'none' ? 'Not recolourable' : 'Recolour as ' + v.label])))));
   if (T.mode === 'character') extra.push(field('Attach to', 'Body part the effect follows (HumanoidRootPart works for R6 and R15)', select('attachTo', ATTACH_POINTS)));
   box.append(
     el('div', { class: 'prop' }, el('label', { title: 'What the effect does by itself in your game. The export includes the scripts for it.' }, 'In Roblox'),
@@ -6386,7 +8063,27 @@ function openExport() {
         el('button', { class: 'btn', onclick: async () => { linkIn.value = await Export.shareLink(E); linkIn.select(); U.copy(linkIn.value); } }, asCode ? 'Create code' : 'Create link')),
     ];
   };
-  modal('Export to Roblox', [warnBox, ...tabbed([['Roblox model (.rbxmx)', modelTab], ['Command Bar', cmdTab], ['ModuleScript', modTab], ['Share / backup', shareTab]])], { width: 760 });
+  const shopTab = () => {
+    const slot = SHOP_SLOTS[E.trigger.shop];
+    const code = Export.shopCommandBar();
+    return [
+      el('p', { class: 'hint', style: { margin: 0 } }, 'Add an in-game colour picker so players choose their own neon / nitro / tyre-smoke / aura colours. Their choice is saved (DataStore) and applied to the car they drive and their character.'),
+      el('div', { class: slot.id ? 'ok-note' : 'warn' }, slot.id
+        ? ['This effect is recoloured as ', el('b', null, slot.label), '.']
+        : 'This effect is not recolourable yet: set Effect › In Roblox › Colour shop, then export it again.'),
+      el('div', { class: 'row gap wrap' },
+        el('button', { class: 'btn primary', onclick: () => { U.download('ParticlyColourShop.rbxmx', Export.shopRbxmx(), 'application/xml'); U.toast('Downloaded ParticlyColourShop.rbxmx'); } }, '⬇ Download colour shop (.rbxmx)'),
+        el('button', { class: 'btn', onclick: () => U.copy(code) }, '⧉ Copy Command Bar installer')),
+      el('h4', null, 'Add it to your game (once)'),
+      el('ol', null,
+        el('li', null, 'Drag ', el('code', null, 'ParticlyColourShop.rbxmx'), ' into Workspace (or paste the installer into the Command Bar).'),
+        el('li', null, 'Export your effects with a Colour shop slot and put them in your cars / characters as usual.'),
+        el('li', null, 'Play: press the ', el('b', null, 'Colours'), ' button, pick a colour, press ', el('b', null, 'Apply'), '. Sit in a car to see it change.'),
+        el('li', null, 'Saving in Studio needs ', el('b', null, 'Game Settings › Security › Enable Studio Access to API Services'), '.')),
+      el('p', { class: 'hint', style: { margin: 0 } }, 'Want to charge for colours? Edit ', el('code', null, 'canChange'), ' at the top of ColourShopServer (e.g. check a game pass).'),
+    ];
+  };
+  modal('Export to Roblox', [warnBox, ...tabbed([['Roblox model (.rbxmx)', modelTab], ['Command Bar', cmdTab], ['ModuleScript', modTab], ['Colour shop', shopTab], ['Share / backup', shareTab]])], { width: 760 });
 }
 
 /* ------------------------------ import ------------------------------ */
@@ -6488,11 +8185,15 @@ function openHelp() {
     el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › ', el('b', null, 'In Roblox'), ' picks what the exported effect does by itself — the scripts come with the export:'),
     el('ul', null,
       el('li', null, el('b', null, 'Vehicle boost'), ': nitro / exhaust / drift smoke. Drop it into a car model with a VehicleSeat; the driver holds a key (gamepad button and mobile button included) and every player sees it. Tick ', el('b', null, 'Drive'), ' in the preview to see it at speed.'),
-      el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons).'),
+      el('li', null, el('b', null, 'React to car speed / drifting'), ': exhaust flames that grow with speed, wind lines, tyre smoke, skid marks, rim sparks, a sonic boom at top speed — no key needed.'),
+      el('li', null, el('b', null, 'Play on crash'), ': spark showers and debris when the car suddenly stops or hits something.'),
+      el('li', null, el('b', null, 'Play when touched'), ' (pads, puddles, pickups — cars count too) and ', el('b', null, 'ProximityPrompt'), ' (chests, buttons). Tick ', el('b', null, 'Keep on'), ' for gates and boost pads that glow all the time and burst when used.'),
       el('li', null, el('b', null, 'Attach to every character'), ': auras, trails, footstep dust.'),
       el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
     el('h4', null, 'Car neon (underglow)'),
-    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload.'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload. Animations include chasing LEDs, a scanner sweep and two-colour police flashes.'),
+    el('h4', null, 'Colour shop'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'Set Effect › In Roblox › Colour shop on neon, nitro, tyre smoke or aura effects, then add the shop from Export › Colour shop. Players get a colour picker; their choice is saved and applied to the car they drive.'),
     el('h4', null, 'Textures'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Built-in textures ship with Roblox and just work. Generated shapes (hearts, leaves, rings…) need a one-time upload: download the PNG from the Textures tab, import it in Studio (Asset Manager → Import), right-click → Copy Asset ID, and paste it into the layer\'s Texture box.'),
     el('h4', null, 'Shortcuts'),
@@ -6589,7 +8290,9 @@ function startLoop() {
     frames++; acc += dt;
     if (acc >= 0.5) {
       const n = App.view.sim.count();
-      stats.textContent = `${n.toLocaleString()} particles · ${Math.round(frames / acc)} fps${n > 3000 ? ' · heavy for mobile' : ''}`;
+      const sp = App.effect && App.view.sim.speedState(App.effect);
+      const car = sp ? ` · car ${Math.round(sp.speed)} studs/s${App.effect.trigger.measure === 'drift' ? ' sliding' : ''}` : '';
+      stats.textContent = `${n.toLocaleString()} particles · ${Math.round(frames / acc)} fps${car}${n > 3000 ? ' · heavy for mobile' : ''}`;
       frames = 0; acc = 0;
     }
     requestAnimationFrame(loop);

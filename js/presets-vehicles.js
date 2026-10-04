@@ -10,7 +10,7 @@ const VEH = (o = {}) => ({ mode: 'vehicle', key: 'LeftShift', ...o });
 /** A nitro jet in any colour scheme. */
 function nitroPreset(name, desc, core, flame, spark, extra = {}) {
   return {
-    name, category: 'Vehicles', desc, partSize: [0.6, 0.6, 0.6], trigger: VEH(), burstLoop: 1.5,
+    name, category: 'Vehicles', desc, partSize: [0.6, 0.6, 0.6], trigger: VEH({ shop: 'boost' }), burstLoop: 1.5,
     layers: [
       { Name: 'Core', ...T('rbx_ff_glow'), Color: core, Size: [[0, 1.1], [1, 0.25]], Squash: -1.6, Transparency: [[0, 0], [1, 0.6]], LightEmission: 1, Brightness: 3, Rate: 140, Lifetime: [0.08, 0.12], Speed: [38, 42], EmissionDirection: 'Back', SpreadAngle: [2, 2], Orientation: 'VelocityParallel', LockedToPart: true },
       { Name: 'Flame', ...T('rbx_fire'), Color: flame, Size: [[0, 1.3, 0.25], [0.6, 0.9], [1, 0.2]], Squash: -1.1, Transparency: [[0, 0.05], [0.7, 0.4], [1, 1]], LightEmission: 1, Brightness: 2, Rate: 110, Lifetime: [0.16, 0.26], Speed: [28, 34], EmissionDirection: 'Back', SpreadAngle: [6, 6], Rotation: [-10, 10], Orientation: 'VelocityParallel', LockedToPart: true },

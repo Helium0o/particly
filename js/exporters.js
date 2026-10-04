@@ -62,7 +62,7 @@ const Export = (() => {
   /** Burst layers are always exported disabled; continuous ones only start on for some behaviours. */
   const enabledFor = (L, startOn) => L.mode !== 'burst' && L.Enabled && startOn;
 
-  function emitterXml(L, ind, startOn = true) {
+  function emitterXml(L, ind, startOn = true, shop = 0) {
     const p = [];
     const add = (s) => p.push(ind + '\t\t' + s);
     add(`<string name="Name">${esc(L.Name)}</string>`);
@@ -81,7 +81,8 @@ const Export = (() => {
         case 'vec3': add(`<Vector3 name="${k}"><X>${f(v[0])}</X><Y>${f(v[1])}</Y><Z>${f(v[2])}</Z></Vector3>`); break;
       }
     }
-    if (L.mode === 'burst') add(`<BinaryString name="AttributesSerialize">${attributesBlob({ EmitCount: L.emitCount, EmitDelay: L.emitDelay })}</BinaryString>`);
+    const attrs = { ...(L.mode === 'burst' ? { EmitCount: L.emitCount, EmitDelay: L.emitDelay } : {}), ...(shop ? { ParticlyShop: shop } : {}) };
+    if (Object.keys(attrs).length) add(`<BinaryString name="AttributesSerialize">${attributesBlob(attrs)}</BinaryString>`);
     return `${ind}<Item class="ParticleEmitter" referent="${ref()}">\n${ind}\t<Properties>\n${p.join('\n')}\n${ind}\t</Properties>\n${ind}</Item>`;
   }
 
@@ -93,9 +94,9 @@ const Export = (() => {
   }
 
   /** Point layers sit in their own Attachment so they emit from the part's centre. */
-  function layerXml(L, ind, startOn = true) {
-    if (!L.point) return emitterXml(L, ind, startOn);
-    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn)}\n${ind}</Item>`;
+  function layerXml(L, ind, startOn = true, shop = 0) {
+    if (!L.point) return emitterXml(L, ind, startOn, shop);
+    return `${ind}<Item class="Attachment" referent="${ref()}">\n${ind}\t<Properties>\n${ind}\t\t<string name="Name">${esc(L.Name)}Point</string>\n${ind}\t</Properties>\n${emitterXml(L, ind + '\t', startOn, shop)}\n${ind}</Item>`;
   }
 
   /* ---------- car neon (SurfaceGui on the Top face + SurfaceLight shining down) ---------- */
@@ -128,7 +129,8 @@ const Export = (() => {
         ], deco));
       });
     }
-    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1 })}</BinaryString>`;
+    const shop = Behaviour.shopSlot(effect);
+    const neonAttr = `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyNeon: 1, ...(shop ? { ParticlyShop: shop } : {}) })}</BinaryString>`;
     const out = [item('SurfaceGui', ind, [
       `<string name="Name">ParticlyNeon</string>`, `<token name="Face">1</token>`, `<bool name="Enabled">${on}</bool>`,
       `<float name="LightInfluence">0</float>`, `<float name="Brightness">${f(u.brightness)}</float>`,
@@ -148,7 +150,7 @@ const Export = (() => {
   /** Emitters + ParticlyControl + behaviour scripts, as children of a Part or Attachment. */
   function containerKids(effect, ind, withNeon = false) {
     const startOn = Behaviour.startsEnabled(effect);
-    const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn));
+    const kids = exportLayers(effect).map((L) => layerXml(L, ind, startOn, Behaviour.shopSlot(effect)));
     if (withNeon) kids.push(...neonXml(effect, ind, startOn));
     for (const sc of Behaviour.containerScripts(effect)) kids.push(scriptXml(sc.cls, sc.name, sc.source, ind, sc.runContext));
     return kids;
@@ -156,7 +158,7 @@ const Export = (() => {
 
   /** "Attach to every character": a Script for StarterCharacterScripts holding emitter templates. */
   function characterXml(effect, ind) {
-    const emitters = exportLayers(effect).map((L) => layerXml(L, ind + '\t\t', true));
+    const emitters = exportLayers(effect).map((L) => layerXml(L, ind + '\t\t', true, Behaviour.shopSlot(effect)));
     const folder = `${ind}\t<Item class="Folder" referent="${ref()}">\n${ind}\t\t<Properties>\n${ind}\t\t\t<string name="Name">Emitters</string>\n${ind}\t\t</Properties>\n${emitters.join('\n')}\n${ind}\t</Item>`;
     const control = scriptXml('ModuleScript', 'ParticlyControl', Behaviour.CONTROL_SOURCE, ind + '\t');
     return scriptXml('Script', 'Particly_' + U.safeName(effect.name), Behaviour.characterSource(effect), ind, null, [folder, control]);
@@ -178,7 +180,7 @@ const Export = (() => {
       `<Vector3 name="size"><X>${f(s[0])}</X><Y>${f(s[1])}</Y><Z>${f(s[2])}</Z></Vector3>`,
       `<CoordinateFrame name="CFrame"><X>${f(pos[0])}</X><Y>${f(pos[1])}</Y><Z>${f(pos[2])}</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>`,
       // Vehicle boosts: this Part welds itself to the nearest car part at runtime
-      mode === 'vehicle' ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyAutoWeld: 1 })}</BinaryString>` : null,
+      Behaviour.autoWelds(effect) ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyAutoWeld: 1 })}</BinaryString>` : null,
     ].filter(Boolean).map((x) => ind + '\t\t' + x).join('\n');
     return `${ind}<Item class="Part" referent="${ref()}">\n${ind}\t<Properties>\n${props}\n${ind}\t</Properties>\n${kids.join('\n')}\n${ind}</Item>`;
   }
@@ -200,7 +202,7 @@ const Export = (() => {
     if (effect.trigger.mode === 'character') return wrap(characterXml(effect, '\t'));
     const c = opts.container || 'part';
     if (c === 'attachment') return wrap(attachmentXml(effect, '\t'));
-    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t', Behaviour.startsEnabled(effect))).join('\n'));
+    if (c === 'emitters') return wrap(exportLayers(effect).map((L) => emitterXml(L, '\t', Behaviour.startsEnabled(effect), Behaviour.shopSlot(effect))).join('\n'));
     return wrap(partXml(effect, {}, [0, effect.partSize[1] / 2 + 3, 0], '\t'));
   }
 
@@ -281,6 +283,7 @@ end`;
 local NEON = {
 	Image = ${u.imageId ? lStr(u.imageId) : 'nil'},
 	Color = ${lCol(u.color)},
+	Color2 = ${lCol(u.color2)}, -- second colour (police / two-colour fade)
 	Brightness = ${f(u.brightness)},
 	Opacity = ${f(u.opacity)},
 	Light = ${u.light && u.lightBrightness > 0 ? 'true' : 'false'},
@@ -302,6 +305,9 @@ ${rows}
 	gui.CanvasSize = Vector2.new(${NEON_W}, ${NEON_H})
 	gui.Enabled = on
 	gui:SetAttribute("ParticlyNeon", 1)
+	if SHOP_SLOT then
+		gui:SetAttribute("ParticlyShop", SHOP_SLOT) -- players can recolour it in the Particly colour shop
+	end
 	if NEON.Image then
 		local image = Instance.new("ImageLabel")
 		image.Name = "Design"
@@ -347,12 +353,20 @@ ${rows}
 		light.Shadows = false
 		light.Enabled = on
 		light:SetAttribute("ParticlyNeon", 1)
+		if SHOP_SLOT then
+			light:SetAttribute("ParticlyShop", SHOP_SLOT)
+		end
 		light.Parent = part
 	end
 	return gui, light
 end`;
     return { table, fn };
   }
+
+  const shopLine = (effect) => {
+    const id = Behaviour.shopSlot(effect);
+    return `local SHOP_SLOT = ${id || 'nil'} -- colour shop slot${id ? ` (${SHOP_SLOTS[effect.trigger.shop].label}): players can recolour this effect` : ': not recolourable'}`;
+  };
 
   function commandBar(effect) {
     const s = effect.partSize;
@@ -361,7 +375,10 @@ end`;
     const neon = neonLua(effect);
     const scripts = character ? [] : Behaviour.containerScripts(effect);
     const scriptRows = scripts.map((sc) => `\t{ Class = ${lStr(sc.cls)}, Name = ${lStr(sc.name)}, RunContext = ${sc.runContext ? lStr(sc.runContext) : 'nil'}, Source = ${longStr(sc.source)} },`).join('\n');
+    const carHow = '--   * Select the car\'s exhaust Part(s) first (inside a model with a VehicleSeat), or\n--   * select nothing to create a Part, then drag it into your car model at the exhaust.';
     const how = {
+      speed: carHow.replace(/exhaust Part/, 'exhaust / wheel Part').replace(/at the exhaust/, 'where it belongs'),
+      impact: carHow.replace(/exhaust Part/, 'bumper Part').replace(/at the exhaust/, 'at the bumper'),
       vehicle: '--   * Select the car\'s exhaust Part(s) first (inside a model with a VehicleSeat), or\n--   * select nothing to create a Part, then drag it into your car model at the exhaust.',
       character: '--   * Creates a Script in StarterPlayer > StarterCharacterScripts: every character gets the effect.',
     }[mode] || '--   * Select Part(s) or Attachment(s) first to add the effect to them, or\n--   * select nothing to create a new invisible Part in front of the camera.';
@@ -374,6 +391,7 @@ ${how}
 local EFFECT_NAME = ${lStr(effect.name)}
 local PART_SIZE = Vector3.new(${f(s[0])}, ${f(s[1])}, ${f(s[2])})
 local MODE = ${lStr(mode)}
+${shopLine(effect)}
 
 local EMITTERS = ${emittersTable(effect, '', Behaviour.startsEnabled(effect))}
 
@@ -400,6 +418,9 @@ local function addEmitters(parent)
 		if def.Burst then
 			emitter:SetAttribute("EmitCount", def.Burst.Count)
 			emitter:SetAttribute("EmitDelay", def.Burst.Delay)
+		end
+		if SHOP_SLOT then
+			emitter:SetAttribute("ParticlyShop", SHOP_SLOT)
 		end
 		local holder = parent
 		if def.Point and parent:IsA("BasePart") then
@@ -471,7 +492,7 @@ else
 		part.CastShadow = false
 		part.Transparency = 1
 		part.CFrame = CFrame.new(camera.CFrame.Position + camera.CFrame.LookVector * 20)
-		if MODE == "vehicle" then
+		if MODE == "vehicle" or MODE == "speed" or MODE == "impact" then
 			part:SetAttribute("ParticlyAutoWeld", 1) -- welds itself to the nearest car part at runtime
 		end
 		build(part)
@@ -528,6 +549,8 @@ Effect.PartSize = Vector3.new(${f(s[0])}, ${f(s[1])}, ${f(s[2])})
 Effect.MaxLifetime = ${f(maxLifetime(effect))}
 Effect.BurstLoop = ${f(effect.burstLoop)} -- suggested seconds between bursts if you loop them
 
+${shopLine(effect)}
+
 Effect.Emitters = ${emittersTable(effect)}
 
 ${neon.table}
@@ -547,6 +570,9 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 			emitter:SetAttribute("EmitCount", def.Burst.Count)
 			emitter:SetAttribute("EmitDelay", def.Burst.Delay)
 		end
+		if SHOP_SLOT then
+			emitter:SetAttribute("ParticlyShop", SHOP_SLOT)
+		end
 		local holder = parent
 		if def.Point and parent:IsA("BasePart") then
 			holder = Instance.new("Attachment")
@@ -559,7 +585,7 @@ function Effect.create(parent: Instance, startOn: boolean?): { ParticleEmitter }
 	if NEON and parent:IsA("BasePart") then
 		local gui, light = buildNeon(parent, startOn ~= false)
 		if NEON.Anim ~= "none" and game:GetService("RunService"):IsClient() then
-			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed) -- animations run on the client
+			animateNeon(gui, light, NEON.Anim, NEON.AnimSpeed, NEON.Color2) -- animations run on the client
 		end
 	end` : ''}
 	return created
@@ -640,6 +666,52 @@ return Effect
 `;
   }
 
+  /* --------------------------- colour shop kit --------------------------- */
+  /** Folder with the colour shop's server + client scripts (drop into Workspace). */
+  function shopRbxmx() {
+    refCounter = 0;
+    const kids = [
+      scriptXml('Script', 'ColourShopServer', Shop.serverSource(), '\t\t', 'Server'),
+      scriptXml('Script', 'ColourShopClient', Shop.clientSource(), '\t\t', 'Client'),
+    ];
+    return wrap(`\t<Item class="Folder" referent="${ref()}">\n\t\t<Properties>\n\t\t\t<string name="Name">ParticlyColourShop</string>\n\t\t</Properties>\n${kids.join('\n')}\n\t</Item>`);
+  }
+  function shopCommandBar() {
+    return `-- Particly colour shop installer. Studio > View > Command Bar: paste and press Enter.
+-- Adds Workspace.ParticlyColourShop (server + client scripts). Undo with Ctrl+Z.
+local SERVER_SOURCE = ${longStr(Shop.serverSource())}
+local CLIENT_SOURCE = ${longStr(Shop.clientSource())}
+
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local recording
+pcall(function()
+	recording = ChangeHistoryService:TryBeginRecording("Insert Particly colour shop")
+end)
+local old = workspace:FindFirstChild("ParticlyColourShop")
+if old then
+	old:Destroy()
+end
+local folder = Instance.new("Folder")
+folder.Name = "ParticlyColourShop"
+local server = Instance.new("Script")
+server.Name = "ColourShopServer"
+server.RunContext = Enum.RunContext.Server
+server.Source = SERVER_SOURCE
+server.Parent = folder
+local client = Instance.new("Script")
+client.Name = "ColourShopClient"
+client.RunContext = Enum.RunContext.Client
+client.Source = CLIENT_SOURCE
+client.Parent = folder
+folder.Parent = workspace
+game:GetService("Selection"):Set({ folder })
+if recording then
+	ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+end
+print("[Particly] Colour shop added: Workspace.ParticlyColourShop")
+`;
+  }
+
   /* --------------------------- JSON / share --------------------------- */
   function json(effect) {
     return JSON.stringify({ particly: 1, type: 'effect', effect }, null, 2);
@@ -656,5 +728,5 @@ return Effect
     return `${base}#fx=${z ? 'z' : 'r'}${U.bytesToB64url(bytes)}`;
   }
 
-  return { warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, json, libraryJson, shareLink, hasBurst, exportLayers };
+  return { shopRbxmx, shopCommandBar, warnings, rbxmx, rbxmxPack, moduleRbxmx, commandBar, moduleScript, json, libraryJson, shareLink, hasBurst, exportLayers };
 })();

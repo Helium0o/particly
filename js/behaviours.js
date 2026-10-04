@@ -11,6 +11,8 @@
 const BEHAVIOURS = {
   always: { label: 'Always on', help: 'Continuous layers run all the time; burst layers replay every "Burst replay" seconds.' },
   vehicle: { label: 'Vehicle boost (hold key while driving)', help: 'For nitro / exhaust / afterburners. Put the effect inside a car model that has a VehicleSeat. The driver holds the key (or the on-screen BOOST button on mobile) and everyone sees it.' },
+  speed: { label: 'React to car speed / drifting', help: 'Grows with the car\'s speed — or with how fast it slides sideways (drift): exhaust flames, wind lines, tyre smoke, skid marks, rim sparks. Burst layers fire when the car hits top speed (sonic boom). Put the effect inside a car model.' },
+  impact: { label: 'Play on crash / hard impact', help: 'Plays when the car suddenly changes speed — a crash, a wall hit or a hard landing (spark showers, debris, smoke). Put it inside a car model, or on any unanchored part.' },
   touch: { label: 'Play when touched', help: 'Plays when a player — or a car someone is driving — touches the part (pickups, boost pads, puddles, traps, checkpoints).' },
   prompt: { label: 'Play from a ProximityPrompt', help: 'Shows an interaction prompt ("Press E"); plays when used (chests, buttons, shrines).' },
   character: { label: 'Attach to every player\'s character', help: 'Auras, trails and footstep dust. Export goes into StarterPlayer › StarterCharacterScripts.' },
@@ -19,7 +21,13 @@ const BEHAVIOURS = {
 const BOOST_KEYS = ['LeftShift', 'RightShift', 'LeftControl', 'Q', 'E', 'F', 'R', 'B', 'N', 'X', 'Z', 'Space'];
 const ATTACH_POINTS = ['HumanoidRootPart', 'Head', 'UpperTorso', 'LowerTorso'];
 
-const TRIGGER_DEFAULTS = { mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart' };
+const TRIGGER_DEFAULTS = {
+  mode: 'always', key: 'LeftShift', buttonText: 'BOOST', toggle: false, maxSeconds: 0, duration: 2, cooldown: 1, actionText: 'Activate', attachTo: 'HumanoidRootPart',
+  measure: 'speed', minSpeed: 10, maxSpeed: 120, scaleSize: true, impact: 45, keepOn: false, shop: 'none',
+};
+/** Colour-shop slots: players recolour every effect tagged with a slot (see Shop in shop.js). */
+const SHOP_SLOTS = { none: { id: 0, label: 'No' }, neon: { id: 1, label: 'Neon / underglow' }, boost: { id: 2, label: 'Nitro / boost' }, smoke: { id: 3, label: 'Tyre smoke' }, aura: { id: 4, label: 'Aura / trail' } };
+const SPEED_MEASURES = { speed: 'Car speed', drift: 'Sideways slide (drift)' };
 /** Gamepad button paired with each keyboard key (so different effects don't share one button). */
 const GAMEPAD_FOR_KEY = { LeftShift: 'ButtonR1', RightShift: 'ButtonR1', Space: 'ButtonR1', LeftControl: 'ButtonL1', Q: 'ButtonL1', E: 'ButtonY', R: 'ButtonY', F: 'ButtonX', X: 'ButtonX', B: 'ButtonB', N: 'DPadUp', Z: 'DPadDown' };
 
@@ -41,6 +49,13 @@ const Behaviour = (() => {
       cooldown: num(t.cooldown, d.cooldown, 0, 600),
       actionText: String(t.actionText || d.actionText).slice(0, 40),
       attachTo: ATTACH_POINTS.includes(t.attachTo) ? t.attachTo : d.attachTo,
+      measure: SPEED_MEASURES[t.measure] ? t.measure : d.measure,
+      minSpeed: num(t.minSpeed, d.minSpeed, 0, 2000),
+      maxSpeed: num(t.maxSpeed, d.maxSpeed, 1, 4000),
+      scaleSize: t.scaleSize === undefined ? d.scaleSize : !!t.scaleSize,
+      impact: num(t.impact, d.impact, 5, 1000),
+      keepOn: !!t.keepOn,
+      shop: SHOP_SLOTS[t.shop] ? t.shop : d.shop,
     };
   }
 
@@ -50,11 +65,17 @@ const Behaviour = (() => {
 
   const hasBurst = (effect) => effect.layers.some((l) => !l.hidden && l.mode === 'burst');
   /** Continuous emitters start enabled only for "always" (and inside character templates). */
-  const startsEnabled = (effect) => effect.trigger.mode === 'always' || effect.trigger.mode === 'character';
+  const startsEnabled = (effect) => {
+    const m = effect.trigger.mode;
+    return m === 'always' || m === 'character' || ((m === 'touch' || m === 'prompt') && effect.trigger.keepOn);
+  };
+  /** Behaviours whose effect Part welds itself into the car it is dropped into. */
+  const autoWelds = (effect) => ['vehicle', 'speed', 'impact'].includes(effect.trigger.mode);
+  const shopSlot = (effect) => SHOP_SLOTS[effect.trigger.shop].id;
   /** Does the container need a ParticlyTrigger script? */
   const needsTrigger = (effect) => {
     const m = effect.trigger.mode;
-    return m === 'touch' || m === 'prompt' || m === 'vehicle' || (m === 'always' && hasBurst(effect));
+    return m === 'touch' || m === 'prompt' || m === 'vehicle' || m === 'speed' || m === 'impact' || (m === 'always' && hasBurst(effect));
   };
 
   const CONTROL_SOURCE = `--[[
@@ -180,6 +201,43 @@ return default
 	return nil, nil
 end`;
 
+  /** Welds an anchored Particly effect Part (dropped into a car) to the nearest car part. */
+  const AUTO_WELD = `local function autoWeld(vehicle)
+	local holder = script.Parent
+	if not (holder:IsA("BasePart") and holder:GetAttribute("ParticlyAutoWeld") == 1 and holder.Anchored) then
+		return
+	end
+	local nearest, nearestDistance = nil, math.huge
+	for _, item in ipairs(vehicle:GetDescendants()) do
+		if item:IsA("BasePart") and item ~= holder then
+			local distance = (item.Position - holder.Position).Magnitude
+			if distance < nearestDistance then
+				nearest, nearestDistance = item, distance
+			end
+		end
+	end
+	if nearest then
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = nearest
+		weld.Part1 = holder
+		weld.Parent = holder
+		holder.Massless = true
+		holder.Anchored = false
+	end
+end`;
+
+  /** The part whose velocity a speed / impact effect reads: the car's seat, else the effect's own part. */
+  const BODY = `local function findBody(seat)
+	if seat then
+		return seat
+	end
+	local holder = script.Parent
+	if holder:IsA("BasePart") then
+		return holder
+	end
+	return holder:FindFirstAncestorWhichIsA("BasePart")
+end`;
+
   function alwaysSource(effect) {
     return `${marker(effect)}
 -- Particly: keeps this effect running and replays its burst layers.
@@ -200,6 +258,7 @@ end
 -- Particly: plays this effect when a player touches the part.
 local DURATION = ${f(t.duration)} -- seconds the effect stays on
 local COOLDOWN = ${f(t.cooldown)} -- seconds before it can trigger again
+local KEEP_ON = ${t.keepOn ? 'true' : 'false'} -- true: continuous layers always run, a touch only fires the bursts
 
 local Players = game:GetService("Players")
 local control = require(script.Parent:WaitForChild("ParticlyControl"))
@@ -234,7 +293,11 @@ local ready = true
 part.Touched:Connect(function(hit)
 	if ready and byPlayer(hit) then
 		ready = false
-		control.play(DURATION)
+		if KEEP_ON then
+			control.burst()
+		else
+			control.play(DURATION)
+		end
 		task.wait(math.max(COOLDOWN, 0.1))
 		ready = true
 	end
@@ -249,6 +312,7 @@ end)
 local ACTION_TEXT = ${lStr(t.actionText)}
 local DURATION = ${f(t.duration)} -- seconds the effect stays on
 local COOLDOWN = ${f(t.cooldown)} -- seconds before it can be used again
+local KEEP_ON = ${t.keepOn ? 'true' : 'false'} -- true: continuous layers always run, the prompt only fires the bursts
 
 local control = require(script.Parent:WaitForChild("ParticlyControl"))
 
@@ -261,7 +325,11 @@ prompt.Parent = script.Parent
 
 prompt.Triggered:Connect(function()
 	prompt.Enabled = false
-	control.play(DURATION)
+	if KEEP_ON then
+		control.burst()
+	else
+		control.play(DURATION)
+	end
 	task.wait(math.max(COOLDOWN, 0.1))
 	prompt.Enabled = true
 end)
@@ -287,26 +355,8 @@ if not seat then
 end
 
 -- A Particly effect Part dropped into the car welds itself to the nearest car part.
-local holder = script.Parent
-if holder:IsA("BasePart") and holder:GetAttribute("ParticlyAutoWeld") == 1 and holder.Anchored then
-	local nearest, nearestDistance = nil, math.huge
-	for _, item in ipairs(vehicle:GetDescendants()) do
-		if item:IsA("BasePart") and item ~= holder then
-			local distance = (item.Position - holder.Position).Magnitude
-			if distance < nearestDistance then
-				nearest, nearestDistance = item, distance
-			end
-		end
-	end
-	if nearest then
-		local weld = Instance.new("WeldConstraint")
-		weld.Part0 = nearest
-		weld.Part1 = holder
-		weld.Parent = holder
-		holder.Massless = true
-		holder.Anchored = false
-	end
-end
+${AUTO_WELD}
+autoWeld(vehicle)
 
 local remote = Instance.new("RemoteEvent")
 remote.Name = "ParticlyBoostRemote"
@@ -443,6 +493,177 @@ refresh()
 `;
   }
 
+  function speedServerSource(effect) {
+    return `${marker(effect)}
+-- Particly speed effect (server part): welds the effect into the car. The client script
+-- ParticlySpeedFx next to this one makes the particles react to the car's speed.
+
+${FIND_SEAT}
+
+${AUTO_WELD}
+
+local vehicle = findVehicle()
+if vehicle then
+	autoWeld(vehicle)
+end
+`;
+  }
+
+  function speedClientSource(effect) {
+    const t = effect.trigger;
+    return `${marker(effect)}
+-- Particly speed effect (client, RunContext = Client). Every player's game scales the
+-- particles with the car's speed, so it looks smooth and costs no network traffic.
+local MEASURE = ${lStr(t.measure)} -- "speed": how fast the car moves · "drift": how fast it slides sideways
+local MIN_SPEED = ${f(t.minSpeed)} -- studs/s where the effect switches on
+local MAX_SPEED = ${f(t.maxSpeed)} -- studs/s for full strength (burst layers fire when this is reached)
+local SCALE_SIZE = ${t.scaleSize ? 'true' : 'false'} -- particles also grow with speed
+
+local RunService = game:GetService("RunService")
+
+${FIND_SEAT}
+
+${BODY}
+
+local _, seat = findVehicle()
+local body = findBody(seat)
+if not body then
+	warn("[Particly] Speed effect must be inside a car model or a Part")
+	return
+end
+
+local layers, bursts, neon = {}, {}, {}
+local level = -1 -- 0 = off, 1..20 = strength steps (properties only change when the step does)
+local function collect(item)
+	if item:IsA("ParticleEmitter") then
+		if item:GetAttribute("EmitCount") then
+			table.insert(bursts, item)
+		else
+			table.insert(layers, { emitter = item, rate = item.Rate, size = item.Size })
+			item.Enabled = false
+			level = -1 -- re-apply the current strength
+		end
+	elseif item:GetAttribute("ParticlyNeon") then
+		table.insert(neon, item)
+		level = -1
+	end
+end
+for _, item in ipairs(script.Parent:GetDescendants()) do
+	collect(item)
+end
+script.Parent.DescendantAdded:Connect(collect) -- parts streamed in later (StreamingEnabled)
+
+local function scaled(sequence, k)
+	local points = {}
+	for _, point in ipairs(sequence.Keypoints) do
+		table.insert(points, NumberSequenceKeypoint.new(point.Time, point.Value * k, point.Envelope * k))
+	end
+	return NumberSequence.new(points)
+end
+
+local function burst()
+	for _, emitter in ipairs(bursts) do
+		local delay = emitter:GetAttribute("EmitDelay") or 0
+		if delay > 0 then
+			task.delay(delay, function()
+				emitter:Emit(emitter:GetAttribute("EmitCount"))
+			end)
+		else
+			emitter:Emit(emitter:GetAttribute("EmitCount"))
+		end
+	end
+end
+
+local atTop = false
+RunService.Heartbeat:Connect(function()
+	local velocity = body.AssemblyLinearVelocity
+	local amount = if MEASURE == "drift" then math.abs(velocity:Dot(body.CFrame.RightVector)) else velocity.Magnitude
+	local strength = math.clamp((amount - MIN_SPEED) / math.max(MAX_SPEED - MIN_SPEED, 1), 0, 1)
+	local step = if amount < MIN_SPEED then 0 else math.max(1, math.floor(strength * 20 + 0.5))
+	if step ~= level then
+		level = step
+		local k = step / 20
+		for _, layer in ipairs(layers) do
+			layer.emitter.Enabled = step > 0
+			if step > 0 then
+				layer.emitter.Rate = layer.rate * (0.15 + 0.85 * k)
+				if SCALE_SIZE then
+					layer.emitter.Size = scaled(layer.size, 0.4 + 0.6 * k)
+				end
+			end
+		end
+		for _, item in ipairs(neon) do
+			item.Enabled = step > 0
+		end
+	end
+	if strength >= 1 and not atTop then
+		atTop = true
+		burst()
+	elseif strength < 0.85 then
+		atTop = false
+	end
+end)
+`;
+  }
+
+  function impactSource(effect) {
+    const t = effect.trigger;
+    return `${marker(effect)}
+-- Particly crash effect (server): plays when the car suddenly changes speed —
+-- a crash, a wall hit or a hard landing.
+local IMPACT_SPEED = ${f(t.impact)} -- studs/s of sudden speed change (within 0.15 s) that counts as a crash
+local DURATION = ${f(t.duration)} -- seconds continuous layers stay on
+local COOLDOWN = ${f(t.cooldown)} -- seconds before it can trigger again
+
+local RunService = game:GetService("RunService")
+local control = require(script.Parent:WaitForChild("ParticlyControl"))
+
+${FIND_SEAT}
+
+${AUTO_WELD}
+
+${BODY}
+
+local vehicle, seat = findVehicle()
+if vehicle then
+	autoWeld(vehicle)
+end
+local body = findBody(seat)
+if not body then
+	warn("[Particly] Crash effect must be inside a car model or a Part")
+	return
+end
+
+-- Compare the velocity with a reference sample refreshed every 0.15 s
+local refTime, refVelocity = 0, nil
+local ready = true
+RunService.Heartbeat:Connect(function()
+	if seat and not seat.Occupant then
+		refVelocity = nil -- parked: nothing to check
+		return
+	end
+	local now = os.clock()
+	local velocity = body.AssemblyLinearVelocity
+	if not refVelocity then
+		refTime, refVelocity = now, velocity
+		return
+	end
+	local change = (velocity - refVelocity).Magnitude
+	if now - refTime >= 0.15 then
+		refTime, refVelocity = now, velocity
+	end
+	if ready and change >= IMPACT_SPEED then
+		ready = false
+		refTime, refVelocity = now, velocity
+		control.play(DURATION)
+		task.delay(math.max(COOLDOWN, 0.1), function()
+			ready = true
+		end)
+	end
+end)
+`;
+  }
+
   function characterSource(effect) {
     const t = effect.trigger;
     return `${marker(effect)}
@@ -508,6 +729,11 @@ end
       list.push({ cls: 'Script', name: 'ParticlyTrigger', source: vehicleServerSource(effect) });
       list.push({ cls: 'Script', name: 'ParticlyBoostClient', source: vehicleClientSource(effect), runContext: 'Client' });
     }
+    if (m === 'speed') {
+      list.push({ cls: 'Script', name: 'ParticlyTrigger', source: speedServerSource(effect) });
+      list.push({ cls: 'Script', name: 'ParticlySpeedFx', source: speedClientSource(effect), runContext: 'Client' });
+    }
+    if (m === 'impact') list.push({ cls: 'Script', name: 'ParticlyTrigger', source: impactSource(effect) });
     return list;
   }
 
@@ -522,13 +748,22 @@ end
         `Play: sit in the driver seat and ${t.toggle ? 'press' : 'hold'} ${t.key} (gamepad ${GAMEPAD_FOR_KEY[t.key]}, mobile "${t.buttonText}" button)${t.toggle ? ' to switch it on/off' : ''}.`,
         ...(effect.underglow && effect.underglow.enabled ? ['Car neon: put the Part flat under the car (X = car width, Z = car length), just above the road. The glow is on its Top face and a light shines down onto the road.'] : []),
       ];
-      case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
-      case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];
+      case 'speed': return [
+        'Drag the .rbxmx into your car model (the model that contains the VehicleSeat) and move the Part where the effect belongs: exhaust, wheel, roof, bumper… It welds itself to the nearest car part.',
+        t.measure === 'drift' ? `It shows while the car slides sideways faster than ${U.fmt(t.minSpeed)} studs/s and is strongest at ${U.fmt(t.maxSpeed)}.` : `It switches on above ${U.fmt(t.minSpeed)} studs/s and is strongest at ${U.fmt(t.maxSpeed)} studs/s${hasBurst(effect) ? ' — burst layers fire when that top speed is reached' : ''}.`,
+        'Wheel effects: put the Part on the wheel itself so it spins with it (rim sparks fling off the tyre).',
+      ];
+      case 'impact': return [
+        'Drag the .rbxmx into your car model and move the Part to the front bumper (or wherever sparks should fly). It welds itself to the car.',
+        `A sudden speed change of ${U.fmt(t.impact)} studs/s plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s). Lower the number for more sensitive crashes.`,
+      ];
+      case 'touch': return ['Drag the .rbxmx into Workspace and move/resize the Part where players should touch it (it is invisible).', t.keepOn ? `It glows all the time; each touch fires the burst layers (cooldown ${U.fmt(t.cooldown)}s).` : `Each touch plays the effect for ${U.fmt(t.duration)}s (cooldown ${U.fmt(t.cooldown)}s).`];
+      case 'prompt': return ['Drag the .rbxmx into Workspace and place the Part on your chest / button / shrine.', t.keepOn ? `It runs all the time; "${t.actionText}" fires the burst layers.` : `Players see "${t.actionText}" and the effect plays for ${U.fmt(t.duration)}s.`];
       case 'character': return ['Drag the .rbxmx onto StarterPlayer › StarterCharacterScripts in the Explorer.', `Press Play: every character gets the effect on its ${t.attachTo}. Server scripts can set character.${U.safeName(effect.name)}Control.Value = false to hide it.`];
       case 'script': return ['Drag the .rbxmx into Workspace (or put the Part where you need it).', 'From a server Script: require(part.ParticlyControl).play(2) — or .start(), .stop(), .burst().'];
       default: return ['Drag the .rbxmx into the Studio 3D view — or right-click Workspace › Insert from File…', 'Move/resize the invisible Part where you want the effect.'];
     }
   }
 
-  return { normalize, containerScripts, characterSource, CONTROL_SOURCE, startsEnabled, needsTrigger, hasBurst, instructions, marker };
+  return { normalize, containerScripts, characterSource, CONTROL_SOURCE, startsEnabled, needsTrigger, hasBurst, instructions, marker, autoWelds, shopSlot };
 })();

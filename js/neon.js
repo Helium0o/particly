@@ -13,10 +13,15 @@
 
 const NEON_W = 256, NEON_H = 512;
 
-const NEON_ANIMS = { none: 'Steady', pulse: 'Pulse', breathe: 'Breathe', flicker: 'Flicker', strobe: 'Strobe', rainbow: 'Rainbow cycle' };
+const NEON_ANIMS = {
+  none: 'Steady', pulse: 'Pulse', breathe: 'Breathe', flicker: 'Flicker', strobe: 'Strobe', rainbow: 'Rainbow cycle',
+  chase: 'Chasing LEDs', scanner: 'Scanner sweep', police: 'Police (2 colours)', duo: 'Two-colour fade',
+};
+/** Animations that use the second colour. */
+const NEON_TWO_COLOUR = ['police', 'duo'];
 
 const NEON_DEFAULTS = {
-  enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], brightness: 2, opacity: 1,
+  enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], color2: [1, 0.1, 0.15], brightness: 2, opacity: 1,
   anim: 'none', animSpeed: 1, light: true, lightBrightness: 3, lightRange: 10, imageId: '',
 };
 
@@ -175,6 +180,8 @@ const Neon = (() => {
     { key: 'led', name: 'LED Strip', rects: () => [...ledSides(), ...ledEnds()] },
     { key: 'ring', name: 'Glow Ring', rects: glowRing },
     { key: 'sides', name: 'Side Tubes', rects: sideBars },
+    { key: 'strip', name: 'Single Strip', rects: () => [pill(0.3, 0.01, 0.4, 0.98)] },
+    { key: 'dashes', name: 'Dashed Line', rects: () => Array.from({ length: 7 }, (_, i) => pill(0.38, 0.02 + i * 0.14, 0.24, 0.1)) },
     { key: 'double', name: 'Double Tubes', rects: () => [pill(0.04, 0.15, 0.05, 0.7), pill(0.13, 0.22, 0.03, 0.56), pill(0.91, 0.15, 0.05, 0.7), pill(0.84, 0.22, 0.03, 0.56)] },
     { key: 'hearts', name: 'Hearts', emblem: 'heart' },
     { key: 'flames', name: 'Flames', emblem: 'flame' },
@@ -201,13 +208,14 @@ const Neon = (() => {
     const d = NEON_DEFAULTS;
     u = u && typeof u === 'object' ? u : {};
     const num = (v, def, min, max) => (isFinite(+v) && v !== null && v !== '' ? U.clamp(+v, min, max) : def);
-    const col = Array.isArray(u.color) && u.color.length === 3 && u.color.every((v) => isFinite(+v)) ? u.color.map((v) => U.clamp(+v, 0, 1))
-      : typeof u.color === 'string' ? U.hexToRgb(u.color) : [...d.color];
+    const colour = (c, def) => (Array.isArray(c) && c.length === 3 && c.every((v) => isFinite(+v)) ? c.map((v) => U.clamp(+v, 0, 1))
+      : typeof c === 'string' ? U.hexToRgb(c) : [...def]);
     return {
       enabled: !!u.enabled,
       design: BY_KEY[u.design] ? u.design : d.design,
       text: String(u.text ?? d.text).slice(0, 14),
-      color: col,
+      color: colour(u.color, d.color),
+      color2: colour(u.color2, d.color2),
       brightness: num(u.brightness, d.brightness, 0, 10),
       opacity: num(u.opacity, d.opacity, 0, 1),
       anim: NEON_ANIMS[u.anim] ? u.anim : d.anim,
@@ -299,6 +307,69 @@ const Neon = (() => {
     return c;
   }
 
+  /* ---------------- animation maths (mirrors animateNeon in Luau below) ---------------- */
+  const mod1 = (x) => x - Math.floor(x); // Lua's x % 1 (always 0..1)
+  /** Police colour group: 0 = whole design, 1 = left / front half, 2 = right / back half. */
+  function groupOf(cx, cy) {
+    if (Math.abs(cx - 0.5) < 0.05 && Math.abs(cy - 0.5) < 0.1) return 0;
+    if (cx < 0.45) return 1;
+    if (cx > 0.55) return 2;
+    return cy < 0.5 ? 1 : 2;
+  }
+  const lerp3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  /**
+   * Brightness k (0..1) and colour of one glowing piece centred at (cx, cy) on the plate at
+   * animation time s (seconds x speed). Pieces of icon designs use the plate centre.
+   */
+  function state(anim, s, cx, cy, c1, c2) {
+    let k = 1, col = c1;
+    switch (anim) {
+      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
+      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
+      case 'flicker': k = ((Math.floor(s * 12) * 7919) % 100) < 9 ? 0.3 : 1; break;
+      case 'strobe': k = mod1(s * 4) < 0.5 ? 1 : 0.1; break;
+      case 'rainbow': col = U.hsvToRgb([mod1(s * 0.25), 0.8, 1]); break;
+      case 'duo': col = lerp3(c1, c2, 0.5 + 0.5 * Math.sin(s * 2)); break;
+      case 'chase': k = 0.12 + 0.88 * Math.max(0, 1 - mod1((s * 0.6 - cy) * 2) * 3); break;
+      case 'scanner': k = 0.1 + 0.9 * Math.max(0, 1 - Math.abs(cy - (0.5 - 0.5 * Math.cos(s * 2.4))) * 4); break;
+      case 'police': {
+        const { phaseA, flash } = police(s), g = groupOf(cx, cy);
+        const on = g === 1 ? phaseA : g === 2 ? !phaseA : true;
+        k = on && flash ? 1 : 0.12;
+        col = g === 1 ? c1 : g === 2 ? c2 : phaseA ? c1 : c2;
+        break;
+      }
+    }
+    return { k, col };
+  }
+  function police(s) {
+    const cycle = mod1(s * 1.2);
+    return { phaseA: cycle < 0.5, flash: Math.floor(mod1(cycle * 2) * 6) % 2 === 0 };
+  }
+  /** Road light (SurfaceLight) brightness factor and colour. */
+  function lightState(anim, s, c1, c2) {
+    if (anim === 'police') { const { phaseA, flash } = police(s); return { k: flash ? 1 : 0.15, col: phaseA ? c1 : c2 }; }
+    if (anim === 'chase' || anim === 'scanner') return { k: 1, col: c1 };
+    return state(anim, s, 0.5, 0.5, c1, c2);
+  }
+  /** Per-piece patterns only make sense for frame designs (an image is a single piece). */
+  const isPattern = (u) => ['chase', 'scanner', 'police'].includes(u.anim) && isFrameDesign(u.design);
+
+  /** Coloured canvas of a frame design with every piece lit by its own animation state (preview). */
+  let animCv = null;
+  function animCanvas(u, s) {
+    if (!animCv) { animCv = document.createElement('canvas'); animCv.width = NEON_W / 2; animCv.height = NEON_H / 2; }
+    const W = animCv.width, H = animCv.height, ctx = animCv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    ctx.shadowBlur = W * 0.06;
+    for (const r of rects(u.design)) {
+      const { k, col } = state(u.anim, s, r.x + r.w / 2, r.y + r.h / 2, u.color, u.color2);
+      ctx.fillStyle = ctx.strokeStyle = ctx.shadowColor = U.rgbToHex(col);
+      drawRect(ctx, { ...r, stroke: r.stroke && r.stroke / 2, a: (r.a ?? 1) * k }, W, H);
+    }
+    return animCv;
+  }
+
   /**
    * GUI Frame specs for Roblox (frame designs only), including soft "halo" copies so the
    * hard-edged Frames read as glowing tubes. Pixel units are on the 256x512 SurfaceGui canvas.
@@ -321,46 +392,100 @@ const Neon = (() => {
   }
 
   /** Luau: animates a neon SurfaceGui (+ light) on each client. Shared by the script and ModuleScript exports. */
-  const ANIMATE_FN = `local function animateNeon(gui, light, anim, speed)
+  const ANIMATE_FN = `local function animateNeon(gui, light, anim, speed, color2)
 	local RunService = game:GetService("RunService")
+	color2 = color2 or Color3.new(1, 0.1, 0.15)
+	-- centre of a glowing piece on the plate (0..1): used by the chase / scanner / police patterns
+	local function centre(item)
+		local frame = if item:IsA("UIStroke") then item.Parent else item
+		if frame and frame:IsA("GuiObject") then
+			return frame.Position.X.Scale + frame.Size.X.Scale / 2, frame.Position.Y.Scale + frame.Size.Y.Scale / 2
+		end
+		return 0.5, 0.5
+	end
+	-- police colour group: 0 = whole design, 1 = left / front, 2 = right / back
+	local function group(cx, cy)
+		if math.abs(cx - 0.5) < 0.05 and math.abs(cy - 0.5) < 0.1 then
+			return 0
+		elseif cx < 0.45 then
+			return 1
+		elseif cx > 0.55 then
+			return 2
+		end
+		return if cy < 0.5 then 1 else 2
+	end
 	local parts = {}
+	local function add(item, prop, color)
+		local cx, cy = centre(item)
+		table.insert(parts, { item = item, prop = prop, color = color, base = item[prop], cy = cy, group = group(cx, cy) })
+	end
 	for _, item in ipairs(gui:GetDescendants()) do
 		if item:IsA("ImageLabel") then
-			table.insert(parts, { item = item, prop = "ImageTransparency", color = "ImageColor3", base = item.ImageTransparency })
+			add(item, "ImageTransparency", "ImageColor3")
 		elseif item:IsA("UIStroke") then
-			table.insert(parts, { item = item, prop = "Transparency", color = "Color", base = item.Transparency })
+			add(item, "Transparency", "Color")
 		elseif item:IsA("Frame") then
-			table.insert(parts, { item = item, prop = "BackgroundTransparency", color = "BackgroundColor3", base = item.BackgroundTransparency })
+			add(item, "BackgroundTransparency", "BackgroundColor3")
 		end
 	end
-	local lightBase = light and light.Brightness or 0
+	local color1 = if parts[1] then parts[1].item[parts[1].color] else Color3.new(1, 1, 1)
+	local lightBase = if light then light.Brightness else 0
+	local plate = gui.Parent
 	return RunService.RenderStepped:Connect(function()
 		if not gui.Enabled then
 			return
 		end
+		local camera = workspace.CurrentCamera
+		if camera and plate and plate:IsA("BasePart") and (camera.CFrame.Position - plate.Position).Magnitude > 300 then
+			return -- too far away to see: skip the work
+		end
 		local s = os.clock() * speed
+		local c1 = gui:GetAttribute("ParticlyNeonColor") or color1 -- set by the Particly colour shop
 		local k, color = 1, nil
+		local phaseA, flash = true, true
 		if anim == "pulse" then
 			k = 0.5 + 0.5 * math.sin(s * math.pi * 2)
 		elseif anim == "breathe" then
 			k = 0.65 + 0.35 * math.sin(s * 2)
 		elseif anim == "flicker" then
-			k = (math.floor(s * 12) * 7919) % 100 < 9 and 0.3 or 1
+			k = if (math.floor(s * 12) * 7919) % 100 < 9 then 0.3 else 1
 		elseif anim == "strobe" then
-			k = (s * 4) % 1 < 0.5 and 1 or 0.1
+			k = if (s * 4) % 1 < 0.5 then 1 else 0.1
 		elseif anim == "rainbow" then
 			color = Color3.fromHSV((s * 0.25) % 1, 0.8, 1)
+		elseif anim == "duo" then
+			color = c1:Lerp(color2, 0.5 + 0.5 * math.sin(s * 2))
+		elseif anim == "police" then
+			local cycle = (s * 1.2) % 1
+			phaseA = cycle < 0.5
+			flash = math.floor(((cycle * 2) % 1) * 6) % 2 == 0
 		end
+		local sweep = 0.5 - 0.5 * math.cos(s * 2.4)
 		for _, p in ipairs(parts) do
-			p.item[p.prop] = 1 - (1 - p.base) * k
-			if color then
-				p.item[p.color] = color
+			local pk, pc = k, color
+			if anim == "chase" then
+				pk = 0.12 + 0.88 * math.max(0, 1 - (((s * 0.6 - p.cy) * 2) % 1) * 3)
+			elseif anim == "scanner" then
+				pk = 0.1 + 0.9 * math.max(0, 1 - math.abs(p.cy - sweep) * 4)
+			elseif anim == "police" then
+				local on = if p.group == 1 then phaseA elseif p.group == 2 then not phaseA else true
+				pk = if on and flash then 1 else 0.12
+				pc = if p.group == 1 then c1 elseif p.group == 2 then color2 elseif phaseA then c1 else color2
+			end
+			p.item[p.prop] = 1 - (1 - p.base) * pk
+			if pc then
+				p.item[p.color] = pc
 			end
 		end
 		if light then
-			light.Brightness = lightBase * k
-			if color then
-				light.Color = color
+			local lk, lc = k, color
+			if anim == "police" then
+				lk = if flash then 1 else 0.15
+				lc = if phaseA then c1 else color2
+			end
+			light.Brightness = lightBase * lk
+			if lc then
+				light.Color = lc
 			end
 		end
 	end)
@@ -370,13 +495,14 @@ end`;
     return `-- Particly car neon animation (RunContext = Client): ${NEON_ANIMS[u.anim]}.
 local ANIM = "${u.anim}"
 local SPEED = ${U.fmt(u.animSpeed)}
+local COLOR2 = Color3.new(${u.color2.map(U.fmt).join(', ')}) -- second colour (police / two-colour fade)
 
 ${ANIMATE_FN}
 
 local gui = script.Parent:WaitForChild("ParticlyNeon")
-animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED)
+animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED, COLOR2)
 `;
   }
 
-  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN };
+  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN, state, lightState, isPattern, animCanvas };
 })();

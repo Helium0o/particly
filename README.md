@@ -3,8 +3,11 @@
 Design Roblox **ParticleEmitter** effects with a live 3D preview, then drop them straight into Roblox Studio.
 
 - **No install needed.** It's a single HTML page, and there's also a desktop app for Windows, Mac and Linux (see below). Open `dist/Particly.html` (or `index.html`) in Chrome, Edge, Firefox or Safari. Works offline.
-- **199 ready-made effects** in 13 categories: vehicles (nitro, exhaust, drift smoke, backfire, afterburners…), car neon (NFS-style underglow), fire, smoke & gas, magic, abilities, combat & impact, weapons, weather & nature, environment, sci-fi & energy, fun & rewards, and seasonal.
-- **Effects that work in your game straight away.** Each export includes the scripts for what the effect should do: hold a key while driving (nitro), play when touched, play from a ProximityPrompt, attach to every player's character, or be controlled from your own scripts.
+- **270 ready-made effects** in 20 categories:
+  - Cars: vehicles (nitro, exhaust, backfire, afterburners…), car neon (NFS-style underglow), wheels & tyres, speed FX, race events, and track & world.
+  - Everything else: fire, smoke & gas, magic, abilities, combat & impact, weapons, weather & nature, environment, sci-fi & energy, fun & rewards, water, cartoon & anime, retro & pixel, and holidays.
+- **Effects that work in your game straight away.** Each export includes the scripts for what the effect should do: hold a key while driving (nitro), grow with the car's speed or drift, play on a crash, play when touched, play from a ProximityPrompt, attach to every player's character, or be controlled from your own scripts.
+- **In-game colour shop:** players pick their own neon, nitro, tyre-smoke or aura colour, and the choice is saved.
 - **Build your own:** layer as many emitters as you want, and edit every ParticleEmitter property with curve and gradient editors. There's also a random generator, a "vary" button, and scale, hue and timing tools.
 - **One-click export to Roblox:** a `.rbxmx` model you drag into Studio, a Command Bar script, or a ModuleScript to use from game code.
 - **Import from anywhere:** `.rbxmx` saved from Studio, Luau code from tutorials or the DevForum, Particly JSON files and share links, URLs, and your own images.
@@ -71,7 +74,9 @@ Every effect has an **In Roblox** setting in the Effect panel. The `.rbxmx` / Co
 | --- | --- | --- |
 | **Always on** | Continuous layers run all the time; burst layers replay every *Burst replay* seconds. | Torches, waterfalls, ambience |
 | **Vehicle boost** | Plays while the driver holds a key. A matching gamepad button and an on-screen mobile button are added, and every player sees it. | Nitro, exhaust, drift smoke, afterburners |
-| **Play when touched** | Plays when a player, or a car someone is driving, touches the part. | Boost pads, puddles, pickups, checkpoints |
+| **React to car speed / drifting** | Grows with the car's speed, or with how fast it slides sideways. Burst layers fire when the car reaches top speed. | Speed-scaled flames, wind lines, tyre smoke, skid marks, rim sparks, sonic boom |
+| **Play on crash** | Plays when the car's speed changes suddenly: a crash, a wall hit or a hard landing. | Spark showers, debris, smoke |
+| **Play when touched** | Plays when a player, or a car someone is driving, touches the part. With **Keep on** ticked, continuous layers glow all the time and a touch only fires the bursts. | Boost pads, puddles, pickups, checkpoint gates, finish lines |
 | **ProximityPrompt** | Shows a "Press E" prompt and plays when it's used. | Chests, buttons, heal stations |
 | **Attach to every character** | Put the export in StarterPlayer › StarterCharacterScripts and every character gets the effect. | Auras, trails, footstep dust |
 | **Controlled by my scripts** | Starts off. From a server Script, call `require(part.ParticlyControl).play(2)`, `.start()`, `.stop()` or `.burst()`. | Explosions, abilities, damage smoke |
@@ -82,7 +87,25 @@ Tick **Car Neon → On** in the Effect panel, or pick a preset from **Car Neon**
 
 - **How it works in Roblox:** the effect Part becomes a flat plate under the car. Its **X** size is the car's width and its **Z** size is its length. A `SurfaceGui` with `LightInfluence = 0` on the plate's top face makes the design glow, and a `SurfaceLight` shines down so the road takes the neon colour. Animations run in a small client script.
 - **Uploads:** the bars, LED, ring and tube designs are built from GUI frames, so they need **no upload**. The icon designs export as a PNG: upload it once and paste the image ID. Until you do, they export as glowing bars.
+- **Animations:** pulse, breathe, flicker, strobe and rainbow change the whole design. **Chasing LEDs**, **Scanner sweep** and **Police** light each LED or tube separately, so use them with the LED, tube, strip or dash designs. **Police** and **Two-colour fade** use a second colour.
 - **Switching it on and off:** to let the driver toggle the neon with a key, set *In Roblox* to **Vehicle boost** and tick **Toggle**, as in the "Neon Toggle (press N)" preset.
+- **Not just cars:** the *Single Strip* and *Dashed Line* designs make neon road edges and tunnel light strips (see **Track & World**).
+
+### Speed, drift and crash effects
+
+- **Speed effects** (*Speed FX*, *Wheels & Tyres*) switch on above the **Starts at** speed and reach full strength at the **Full at** speed. Speeds are in studs per second, and a typical Roblox car does 50–150. They get more particles and, optionally, bigger ones. Set **Reacts to** to *Sideways slide (drift)* for drift smoke and skid marks.
+- **Wheel effects:** put the Part on the wheel itself. It welds to the nearest car part, so on a wheel it spins with it and rim sparks fling off the tyre.
+- **Crash effects** go at the front bumper. **Crash at** is how big a sudden speed change counts as a crash.
+- The preview's **Drive** mode speeds the car up and slows it down every 10 seconds, so you can see the effect react. The speed is shown in the bottom-left corner.
+
+### Colour shop (players choose their colours)
+
+1. On each effect players should be able to recolour, set **Effect › In Roblox › Colour shop** to *Neon*, *Nitro / boost*, *Tyre smoke* or *Aura / trail*. All car neon and nitro presets already have it.
+2. Add the shop to your game once: **Export › Colour shop**. Drag `ParticlyColourShop.rbxmx` into Workspace, or paste the Command Bar installer.
+3. In game, players press **Colours**, pick a colour with the hue, strength and brightness bars (or a preset swatch), and press **Apply**.
+4. The colour is saved in a DataStore and applied to the car the player is driving and to their character. To test saving in Studio, turn on *Game Settings › Security › Enable Studio Access to API Services*.
+
+The server checks every request: only valid slots and colours are accepted, and requests are rate-limited. To charge for colours, for example with a game pass, edit `canChange` at the top of `ColourShopServer`.
 
 ### Car nitro, step by step
 
@@ -139,9 +162,10 @@ index.html          app shell
 css/style.css       styles
 js/model.js         ParticleEmitter schema, defaults, sequence math
 js/textures.js      built-in + procedural textures
-js/presets*.js      the 173 presets (presets-vehicles.js = cars)
+js/presets*.js      the 270 presets (vehicles, neon, race = cars; packs = water / cartoon / pixel / holidays)
 js/behaviours.js    "In Roblox" behaviours: generates ParticlyControl + trigger scripts
-js/neon.js          car neon designs + SurfaceGui/SurfaceLight export helpers
+js/neon.js          car neon designs, animations + SurfaceGui/SurfaceLight export helpers
+js/shop.js          in-game colour shop (server + client scripts)
 js/renderer.js      particle simulation + WebGL2 preview
 js/exporters.js     .rbxmx / Command Bar / ModuleScript / JSON / share links
 js/importers.js     JSON / .rbxmx / Luau parser / URLs

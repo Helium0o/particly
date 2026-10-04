@@ -332,7 +332,149 @@ const TexGen = (() => {
     };
   }
 
-  return { flameJet, shard, droplet, debris, cloud, hexagon, spiral, beam, feather, glyph, glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
+  /* ---------- pixel art (crisp blocks: draws the same at any resolution) ---------- */
+  // '#' = solid, '+' = 60 % (shading), '.' = empty
+  function pixelArt(rows) {
+    return (ctx, S) => {
+      ctx.clearRect(0, 0, S, S);
+      const n = Math.max(rows.length, ...rows.map((r) => r.length)) + 2, c = S / n; // 1 empty cell of padding
+      const oy = (n - rows.length) / 2, ox = (n - Math.max(...rows.map((r) => r.length))) / 2;
+      rows.forEach((row, y) => [...row].forEach((ch, x) => {
+        if (ch === '.' || ch === ' ') return;
+        ctx.fillStyle = ch === '+' ? 'rgba(255,255,255,0.6)' : '#fff';
+        ctx.fillRect(Math.floor((x + ox) * c), Math.floor((y + oy) * c), Math.ceil(c), Math.ceil(c));
+      }));
+    };
+  }
+  /** Bold outlined text (race signs, countdown numbers). */
+  function text(lines, scale = 0.5) {
+    return (ctx, S) => {
+      ctx.clearRect(0, 0, S, S);
+      const ls = String(lines).split('\n');
+      const size = Math.round(S * scale / Math.max(1, ls.length * 0.8));
+      ctx.font = `900 ${size}px "Arial Black", Impact, "Segoe UI", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ls.forEach((l, i) => {
+        const y = S / 2 + (i - (ls.length - 1) / 2) * size * 1.05;
+        ctx.lineWidth = size * 0.16; ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.strokeText(l, S / 2, y, S * 0.94);
+        ctx.fillStyle = '#fff'; ctx.fillText(l, S / 2, y, S * 0.94);
+      });
+    };
+  }
+  function shape(draw) {
+    return (ctx, S) => { ctx.clearRect(0, 0, S, S); ctx.save(); ctx.fillStyle = ctx.strokeStyle = '#fff'; draw(ctx, S); ctx.restore(); };
+  }
+  const poly = (ctx, pts, S) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * S, y * S) : ctx.moveTo(x * S, y * S))); ctx.closePath(); };
+
+  // comic "POW" star burst
+  const pow = shape((ctx, S) => {
+    const pts = [];
+    for (let i = 0; i < 24; i++) { const r = i % 2 ? 0.28 : 0.47 + (i % 4 === 0 ? 0.02 : -0.04), a = i * Math.PI / 12; pts.push([0.5 + Math.cos(a) * r, 0.5 + Math.sin(a) * r]); }
+    poly(ctx, pts, S); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = S * 0.03; poly(ctx, pts.map(([x, y]) => [0.5 + (x - 0.5) * 0.8, 0.5 + (y - 0.5) * 0.8]), S); ctx.stroke();
+  });
+  // anime anger mark: four curved brackets
+  const anger = shape((ctx, S) => {
+    ctx.lineWidth = S * 0.09; ctx.lineCap = 'round';
+    for (let i = 0; i < 4; i++) {
+      ctx.save(); ctx.translate(S / 2, S / 2); ctx.rotate(i * Math.PI / 2);
+      ctx.beginPath(); ctx.moveTo(S * 0.08, -S * 0.36); ctx.quadraticCurveTo(S * 0.1, -S * 0.1, S * 0.36, -S * 0.08); ctx.stroke();
+      ctx.restore();
+    }
+  });
+  // manga impact frame: radial speed lines around an empty centre
+  const impactLines = shape((ctx, S) => {
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2 + Math.sin(i * 12.9898) * 0.05, w = 0.012 + (Math.sin(i * 78.233) * 0.5 + 0.5) * 0.02, r0 = 0.22 + (Math.sin(i * 3.7) * 0.5 + 0.5) * 0.12;
+      poly(ctx, [[0.5 + Math.cos(a - w) * 0.5, 0.5 + Math.sin(a - w) * 0.5], [0.5 + Math.cos(a) * r0, 0.5 + Math.sin(a) * r0], [0.5 + Math.cos(a + w) * 0.5, 0.5 + Math.sin(a + w) * 0.5]], S);
+      ctx.fill();
+    }
+  });
+  function ripple(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const r = radial(u, v);
+      const a = 1 - smooth(0.02, 0.06, Math.abs(r - 0.84)), b = 0.55 * (1 - smooth(0.015, 0.05, Math.abs(r - 0.62)));
+      return W(Math.max(a, b) * (1 - smooth(0.9, 1, r)));
+    });
+  }
+  const splash = shape((ctx, S) => {
+    // crown splash: jagged rim with droplets thrown up
+    ctx.beginPath(); ctx.moveTo(0.08 * S, 0.9 * S);
+    for (let i = 0; i <= 8; i++) { const x = 0.08 + i * 0.105; ctx.lineTo((x - 0.03) * S, (0.72 - (i % 2 ? 0 : 0.2 + Math.abs(4 - i) * -0.02)) * S); ctx.lineTo((x + 0.02) * S, 0.74 * S); }
+    ctx.lineTo(0.92 * S, 0.9 * S); ctx.closePath(); ctx.fill();
+    for (const [x, y, r] of [[0.2, 0.3, 0.035], [0.4, 0.2, 0.04], [0.62, 0.24, 0.035], [0.8, 0.34, 0.03], [0.5, 0.4, 0.025]]) { ctx.beginPath(); ctx.arc(x * S, y * S, r * S, 0, Math.PI * 2); ctx.fill(); }
+  });
+  const foam = shape((ctx, S) => {
+    for (let i = 0; i < 26; i++) {
+      const a = i * 2.39996, r = Math.sqrt(i / 26) * 0.36, br = 0.05 + (Math.sin(i * 4.1) * 0.5 + 0.5) * 0.06;
+      ctx.globalAlpha = 0.65 + 0.35 * Math.sin(i * 1.7) ** 2;
+      ctx.beginPath(); ctx.arc((0.5 + Math.cos(a) * r) * S, (0.5 + Math.sin(a) * r) * S, br * S, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  const pumpkin = shape((ctx, S) => {
+    for (const [dx, rx] of [[-0.17, 0.2], [0.17, 0.2], [0, 0.22]]) { ctx.beginPath(); ctx.ellipse((0.5 + dx) * S, 0.56 * S, rx * S, 0.3 * S, 0, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillRect(0.46 * S, 0.14 * S, 0.08 * S, 0.14 * S);
+    ctx.globalCompositeOperation = 'destination-out';
+    poly(ctx, [[0.33, 0.5], [0.4, 0.4], [0.45, 0.5]], S); ctx.fill();
+    poly(ctx, [[0.55, 0.5], [0.6, 0.4], [0.67, 0.5]], S); ctx.fill();
+    poly(ctx, [[0.3, 0.62], [0.38, 0.7], [0.44, 0.64], [0.5, 0.72], [0.56, 0.64], [0.62, 0.7], [0.7, 0.62], [0.64, 0.76], [0.36, 0.76]], S); ctx.fill();
+  });
+  const gift = shape((ctx, S) => {
+    ctx.fillRect(0.18 * S, 0.4 * S, 0.64 * S, 0.5 * S);
+    ctx.fillRect(0.14 * S, 0.3 * S, 0.72 * S, 0.12 * S);
+    ctx.lineWidth = S * 0.06;
+    for (const sx of [-1, 1]) { ctx.beginPath(); ctx.ellipse((0.5 + sx * 0.12) * S, 0.22 * S, 0.12 * S, 0.07 * S, sx * 0.5, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.45;
+    ctx.fillRect(0.45 * S, 0.3 * S, 0.1 * S, 0.6 * S);
+  });
+  const egg = shape((ctx, S) => {
+    ctx.beginPath(); ctx.ellipse(0.5 * S, 0.54 * S, 0.3 * S, 0.4 * S, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.4; ctx.lineWidth = S * 0.05;
+    ctx.beginPath(); for (let i = 0; i <= 6; i++) ctx.lineTo((0.22 + i * 0.093) * S, (i % 2 ? 0.42 : 0.5) * S); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.24 * S, 0.66 * S); ctx.lineTo(0.76 * S, 0.66 * S); ctx.stroke();
+  });
+  const clover = shape((ctx, S) => {
+    for (let i = 0; i < 4; i++) {
+      ctx.save(); ctx.translate(S / 2, S * 0.46); ctx.rotate(i * Math.PI / 2 + Math.PI / 4);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.bezierCurveTo(-S * 0.26, -S * 0.12, -S * 0.12, -S * 0.36, 0, -S * 0.22); ctx.bezierCurveTo(S * 0.12, -S * 0.36, S * 0.26, -S * 0.12, 0, 0); ctx.fill();
+      ctx.restore();
+    }
+    ctx.lineWidth = S * 0.04; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0.5 * S, 0.5 * S); ctx.quadraticCurveTo(0.55 * S, 0.8 * S, 0.66 * S, 0.92 * S); ctx.stroke();
+  });
+  const candy = shape((ctx, S) => {
+    ctx.lineWidth = S * 0.13; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0.56 * S, 0.92 * S); ctx.lineTo(0.56 * S, 0.34 * S); ctx.arc(0.43 * S, 0.34 * S, 0.13 * S, 0, Math.PI, true); ctx.lineTo(0.3 * S, 0.42 * S); ctx.stroke();
+    ctx.globalCompositeOperation = 'destination-out'; ctx.globalAlpha = 0.5; ctx.lineWidth = S * 0.035;
+    for (let y = 0.4; y < 0.92; y += 0.11) { ctx.beginPath(); ctx.moveTo(0.48 * S, (y + 0.05) * S); ctx.lineTo(0.64 * S, (y - 0.03) * S); ctx.stroke(); }
+  });
+  const tree = shape((ctx, S) => {
+    poly(ctx, [[0.5, 0.1], [0.72, 0.4], [0.62, 0.4], [0.8, 0.64], [0.68, 0.64], [0.86, 0.84], [0.14, 0.84], [0.32, 0.64], [0.2, 0.64], [0.38, 0.4], [0.28, 0.4]], S); ctx.fill();
+    ctx.fillRect(0.44 * S, 0.84 * S, 0.12 * S, 0.1 * S);
+  });
+  const chevron = shape((ctx, S) => { poly(ctx, [[0.12, 0.66], [0.5, 0.2], [0.88, 0.66], [0.88, 0.84], [0.5, 0.4], [0.12, 0.84]], S); ctx.fill(); });
+  const checker = shape((ctx, S) => {
+    const n = 6, c = S * 0.84 / n;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { ctx.globalAlpha = (x + y) % 2 ? 0.22 : 1; ctx.fillRect(S * 0.08 + x * c, S * 0.08 + y * c, c, c); }
+  });
+  function skid(ctx, S) {
+    // tyre track: a dark band with tread blocks (tint it dark grey, use LightEmission 0)
+    pixels(ctx, S, (u, v) => {
+      const band = 1 - smooth(0.32, 0.4, Math.abs(u - 0.5));
+      const tread = ((Math.floor(v * 10) + (u < 0.5 ? 0 : 1)) % 2) ? 1 : 0.7;
+      return W(band * tread * 0.9);
+    });
+  }
+  function windline(ctx, S) {
+    pixels(ctx, S, (u, v) => {
+      const y = 0.5 + Math.sin(u * Math.PI * 1.5) * 0.08;
+      const line = 1 - smooth(0.006, 0.03, Math.abs(v - y));
+      return W(line * smooth(0, 0.3, u) * (1 - smooth(0.7, 1, u)));
+    });
+  }
+
+  return { pixelArt, text, pow, anger, impactLines, ripple, splash, foam, pumpkin, gift, egg, clover, candy, tree, chevron, checker, skid, windline, flameJet, shard, droplet, debris, cloud, hexagon, spiral, beam, feather, glyph, glow, circle, ring, shockwave, square, star, star5, heart, streak, raindrop, snowflake, leaf, petal, bubble, flare, lightning, smoke, fire, vortex, implosion, diamond, crescent, dot, confetti, slash };
 })();
 
 const RBX = (n) => 'rbxasset://textures/particles/' + n;
@@ -386,6 +528,40 @@ const TEXTURES = [
   { key: 'g_bang', name: 'Exclamation', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('!', 0.85) },
   { key: 'g_dollar', name: 'Dollar', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('$', 0.8) },
   { key: 'g_question', name: 'Question', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.glyph('?', 0.85) },
+  // cartoon / anime
+  { key: 'pow', name: 'Comic POW', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pow },
+  { key: 'anger', name: 'Anger Mark', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.anger },
+  { key: 'impact_lines', name: 'Impact Frame', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.impactLines },
+  // water
+  { key: 'ripple', name: 'Ripple', group: 'shape', fallback: 'rbx_exp_shock', gen: TexGen.ripple },
+  { key: 'splash', name: 'Splash Crown', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.splash },
+  { key: 'foam', name: 'Foam', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.foam },
+  // race / cars
+  { key: 'chevron', name: 'Arrow Chevron', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.chevron },
+  { key: 'checker', name: 'Checkered Flag', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.checker },
+  { key: 'skid', name: 'Skid Mark', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.skid },
+  { key: 'windline', name: 'Wind Line', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.windline },
+  { key: 't_3', name: 'Countdown 3', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('3', 0.8) },
+  { key: 't_2', name: 'Countdown 2', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('2', 0.8) },
+  { key: 't_1', name: 'Countdown 1', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('1', 0.8) },
+  { key: 't_go', name: 'GO!', group: 'shape', fallback: 'rbx_ff_glow', gen: TexGen.text('GO!', 0.6) },
+  { key: 't_record', name: 'NEW RECORD', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.text('NEW\nRECORD!', 0.5) },
+  { key: 't_finish', name: 'FINISH', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.text('FINISH', 0.42) },
+  // holidays
+  { key: 'pumpkin', name: 'Pumpkin', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pumpkin },
+  { key: 'gift', name: 'Gift', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.gift },
+  { key: 'egg', name: 'Easter Egg', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.egg },
+  { key: 'clover', name: 'Clover', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.clover },
+  { key: 'candy', name: 'Candy Cane', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.candy },
+  { key: 'tree', name: 'Xmas Tree', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.tree },
+  // retro / pixel
+  { key: 'px_heart', name: 'Pixel Heart', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['.##.##.', '#######', '#######', '.#####.', '..###..', '...#...']) },
+  { key: 'px_star', name: 'Pixel Star', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pixelArt(['...#...', '...#...', '#######', '.#####.', '..###..', '.##.##.', '##...##']) },
+  { key: 'px_coin', name: 'Pixel Coin', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['..###..', '.#+++#.', '#++#++#', '#++#++#', '#++#++#', '.#+++#.', '..###..']) },
+  { key: 'px_spark', name: 'Pixel Sparkle', group: 'shape', fallback: 'rbx_sparkles', gen: TexGen.pixelArt(['...#...', '...#...', '..+#+..', '###.###', '..+#+..', '...#...', '...#...']) },
+  { key: 'px_puff', name: 'Pixel Puff', group: 'shape', fallback: 'rbx_smoke', gen: TexGen.pixelArt(['..####..', '.######.', '########', '##++####', '#####++#', '.######.', '..####..']) },
+  { key: 'px_flame', name: 'Pixel Flame', group: 'shape', fallback: 'rbx_fire', gen: TexGen.pixelArt(['...#....', '...##...', '..###.#.', '.####.##', '.##++###', '##++++##', '##+++###', '.######.']) },
+  { key: 'px_block', name: 'Pixel Block', group: 'shape', fallback: 'rbx_fire_sparks', gen: TexGen.pixelArt(['####', '#++#', '#++#', '####']) },
 ];
 const TEX_BY_KEY = Object.fromEntries(TEXTURES.map((t) => [t.key, t]));
 const TEX_BY_RBX = Object.fromEntries(TEXTURES.filter((t) => t.rbx).map((t) => [t.rbx.toLowerCase(), t]));

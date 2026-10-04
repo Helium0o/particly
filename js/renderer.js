@@ -74,9 +74,17 @@ class Sim {
     this.emitterVel = dt > 0 ? V3.scale(V3.sub(this.emitterPos, prev), 1 / dt) : [0, 0, 0];
     if (V3.len(this.emitterVel) > 200) this.emitterVel = [0, 0, 0];
     // Drive: the camera rides with the car, so the world (and detached particles) streams backwards.
-    this.driveShift = opts.drive ? DRIVE_SPEED * dt : 0;
+    const sp = this.speedState(effect);
+    this.driveShift = opts.drive ? (sp ? sp.speed : DRIVE_SPEED) * dt : 0;
     this.driveOffset = ((this.driveOffset || 0) + this.driveShift) % 2;
-    if (opts.drive) this.emitterVel = [0, 0, -DRIVE_SPEED];
+    if (opts.drive) this.emitterVel = [0, 0, -(sp ? sp.speed : DRIVE_SPEED)];
+    // Speed effects: rate and size follow the simulated speed; bursts fire on reaching top speed
+    this.sizeK = sp && sp.on && effect.trigger.scaleSize ? 0.4 + 0.6 * sp.k : 1;
+    let topBurst = false;
+    if (sp) {
+      topBurst = sp.k >= 1 && !this.atTop;
+      if (sp.k >= 1) this.atTop = true; else if (sp.k < 0.85) this.atTop = false;
+    }
 
     const ids = new Set(effect.layers.map((l) => l.id));
     for (const id of this.state.keys()) if (!ids.has(id)) this.state.delete(id);
@@ -88,11 +96,13 @@ class Sim {
       const ldt = dt * U.clamp(L.TimeScale, 0, 10);
       if (!L.hidden) {
         if (L.mode === 'continuous' && L.Enabled) {
-          s.acc += L.Rate * ldt;
+          s.acc += L.Rate * ldt * (sp ? (sp.on ? 0.15 + 0.85 * sp.k : 0) : 1);
           let n = Math.floor(s.acc);
           s.acc -= n;
           n = Math.min(n, 400);
           for (let i = 0; i < n; i++) this.spawn(L, s, effect);
+        } else if (L.mode === 'burst' && sp) {
+          if (topBurst && opts.autoBurst) this.emit(L, s, effect, L.emitCount);
         } else if (L.mode === 'burst' && opts.autoBurst) {
           const d = L.emitDelay, loop = Math.max(0.1, effect.burstLoop);
           if (this.time >= d) {
@@ -107,6 +117,18 @@ class Sim {
       }
       this.update(L, s, ldt, this.driveShift);
     }
+  }
+  /**
+   * "React to car speed" preview: the car speeds up to just past top speed over 6 s, holds,
+   * then slows down (10 s loop). Returns null for other behaviours.
+   */
+  speedState(effect) {
+    const t = effect.trigger;
+    if (!t || t.mode !== 'speed') return null;
+    const c = (this.time + 4) % 10, top = t.maxSpeed * 1.1; // start fairly fast so the effect shows straight away
+    const speed = c < 6 ? top * (c / 6) : c < 7 ? top : top * Math.max(0, 1 - (c - 7) / 3);
+    const k = U.clamp((speed - t.minSpeed) / Math.max(t.maxSpeed - t.minSpeed, 1), 0, 1);
+    return { speed, k, on: speed >= t.minSpeed };
   }
   emit(L, s, effect, n) { n = Math.min(n, 2000); for (let i = 0; i < n; i++) this.spawn(L, s, effect); }
 
@@ -427,18 +449,9 @@ class ParticleView {
     gl.drawArrays(gl.LINES, 0, out.length / 7);
   }
 
-  /** 0..1 brightness and colour of the neon plate at time t (same maths as the Roblox script). */
+  /** 0..1 brightness and colour of the whole neon plate at time t (same maths as the Roblox script). */
   static neonState(u, t) {
-    const s = t * u.animSpeed;
-    let k = 1, col = u.color;
-    switch (u.anim) {
-      case 'pulse': k = 0.5 + 0.5 * Math.sin(s * Math.PI * 2); break;
-      case 'breathe': k = 0.65 + 0.35 * Math.sin(s * 2); break;
-      case 'flicker': k = ((Math.floor(s * 12) * 2654435761) >>> 0) % 100 < 9 ? 0.3 : 1; break;
-      case 'strobe': k = (s * 4) % 1 < 0.5 ? 1 : 0.1; break;
-      case 'rainbow': col = U.hsvToRgb([(s * 0.25) % 1, 0.8, 1]); break;
-    }
-    return { k, col };
+    return Neon.state(u.anim, t * u.animSpeed, 0.5, 0.5, u.color, u.color2);
   }
 
   _quad(B, o, c, ax, az, uv, rgb, a) {
@@ -454,29 +467,34 @@ class ParticleView {
   _drawNeon() {
     const E = this.effect, u = E && E.underglow;
     if (!u || !u.enabled) return;
-    const gl = this.gl;
+    const gl = this.gl, s = this.sim.time * u.animSpeed;
+    const pattern = Neon.isPattern(u);
     const { k, col } = ParticleView.neonState(u, this.sim.time);
     const p = this.sim.emitterPos, hx = E.partSize[0] / 2, hz = E.partSize[2] / 2;
     const B = new Float32Array(54);
     gl.uniform1f(this.uEmit, 1);
     if (u.light && u.lightBrightness > 0) {
-      const spillA = U.clamp(0.25 * k * u.lightBrightness / 3, 0, 0.8);
-      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, col, spillA);
+      const L = Neon.lightState(u.anim, s, u.color, u.color2);
+      const spillA = U.clamp(0.25 * L.k * u.lightBrightness / 3, 0, 0.8);
+      this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, L.col, spillA);
       gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text, Neon.spill(u.design, u.text)));
       gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
-    const rgb = col.map((v) => v * Math.max(0.2, u.brightness / 2));
-    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * k, 0, 1));
-    gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
+    const glow = Math.max(0.2, u.brightness / 2);
+    // Chase / scanner / police light each piece separately: draw a freshly coloured canvas
+    const rgb = pattern ? [glow, glow, glow] : col.map((v) => v * glow);
+    this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * (pattern ? 1 : k), 0, 1));
+    gl.bindTexture(gl.TEXTURE_2D, pattern ? this._canvasTexture('neonanim', Neon.animCanvas(u, s), true)
+      : this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
     gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
-  _canvasTexture(key, src) {
+  _canvasTexture(key, src, dynamic = false) {
     const gl = this.gl;
     let rec = this.texCache[key];
-    if (rec && rec.src === src) return rec.tex;
+    if (rec && rec.src === src && !dynamic) return rec.tex;
     if (!rec) { rec = { tex: gl.createTexture() }; this.texCache[key] = rec; }
     rec.src = src;
     gl.bindTexture(gl.TEXTURE_2D, rec.tex);
@@ -533,7 +551,7 @@ class ParticleView {
         const q = it.q;
         if (it.d < 0.1) continue;
         const t = q.age / q.life;
-        const size = Model.evalNum(L.Size, t, q.rs);
+        const size = Model.evalNum(L.Size, t, q.rs) * (L.mode === 'burst' ? 1 : this.sim.sizeK || 1);
         if (size <= 0) continue;
         const alpha = 1 - U.clamp(Model.evalNum(L.Transparency, t, q.rt), 0, 1);
         if (alpha <= 0.002) continue;
