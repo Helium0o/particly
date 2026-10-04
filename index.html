@@ -31,6 +31,7 @@
       <button data-tab="presets" class="active">Presets</button>
       <button data-tab="library">My Library</button>
       <button data-tab="textures">Textures</button>
+      <button data-tab="nfs" title="NFS World car neons from your own neon pack">NFS Neon</button>
     </nav>
     <section class="tab-body" id="tab-presets">
       <input id="presetSearch" class="search" placeholder="Search effects…">
@@ -55,6 +56,10 @@
       <div id="texDetail" class="tex-detail"></div>
       <button id="btnTexUpload" class="btn small block">Import your own image…</button>
       <input id="texFile" type="file" accept="image/*" hidden>
+    </section>
+    <section class="tab-body hidden" id="tab-nfs">
+      <div id="nfsBody"></div>
+      <input id="nfsFile" type="file" accept=".bin,.tpk,.json,.end,.png,.jpg,.jpeg,.webp" multiple hidden>
     </section>
   </aside>
 
@@ -105,6 +110,7 @@
 <script src="js/textures.js"></script>
 <script src="js/neon.js"></script>
 <script src="js/shop.js"></script>
+<script src="js/neonpack.js"></script>
 <script src="js/presets.js"></script>
 <script src="js/presets-vehicles.js"></script>
 <script src="js/presets-more.js"></script>

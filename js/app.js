@@ -129,12 +129,20 @@ function refreshAll() {
 
 const neonThumbCache = {};
 /** Small tinted preview of a neon design. */
-function neonThumb(design, text, color, w = 44) {
-  const key = [design, text, color.join(','), w].join('|');
+function neonThumb(design, text, color, w = 44, image = '') {
+  const key = [design, text, color.join(','), w, image].join('|');
   if (neonThumbCache[key]) return neonThumbCache[key];
   const c = document.createElement('canvas');
   c.width = w; c.height = w * 2;
   const ctx = c.getContext('2d');
+  if (design === 'image') {
+    // full-colour picture: no tint (an empty tile until one is chosen in the NFS Neon tab)
+    const pic = Neon.imageCanvas(image);
+    ctx.drawImage(pic, 0, 0, c.width, c.height);
+    const url = c.toDataURL();
+    if (image && TextureStore.source(image)) neonThumbCache[key] = url;
+    return url;
+  }
   ctx.drawImage(Neon.canvas(design, text), 0, 0, c.width, c.height);
   ctx.globalCompositeOperation = 'source-in';
   ctx.fillStyle = U.rgbToHex(color);
@@ -164,8 +172,9 @@ function renderNeonCard() {
   }
   const grid = el('div', { class: 'neon-grid' }, Neon.DESIGNS.map((d) => el('button', {
     class: 'neon-tile' + (u.design === d.key ? ' sel' : ''), title: d.name + (Neon.isFrameDesign(d.key) ? ' — no upload needed' : ' — image, upload once'),
-    style: { backgroundImage: `url(${neonThumb(d.key, u.text, u.color)})` }, onclick: () => set('design', d.key),
-  }, Neon.isFrameDesign(d.key) ? el('span', { class: 'dot' }) : null)));
+    style: { backgroundImage: `url(${neonThumb(d.key, u.text, u.color, 44, u.image)})` },
+    onclick: () => (d.key === 'image' && !u.image ? setLeftTab('nfs') : set('design', d.key)),
+  }, Neon.isFrameDesign(d.key) ? el('span', { class: 'dot' }) : d.key === 'image' && !u.image ? 'NFS' : null)));
   const color = el('input', { type: 'color', value: U.rgbToHex(u.color) });
   color.addEventListener('input', () => { u.color = U.hexToRgb(color.value); });
   color.addEventListener('change', () => set('color', U.hexToRgb(color.value)));
@@ -178,7 +187,9 @@ function renderNeonCard() {
   light.addEventListener('change', () => set('light', light.checked));
   const rows = [
     grid,
-    el('div', { class: 'hint', style: { margin: 0 } }, el('b', null, Neon.BY_KEY[u.design].name), Neon.isFrameDesign(u.design) ? ' — built from glowing GUI frames, no upload needed.' : ' — exported as an image (upload once).'),
+    el('div', { class: 'hint', style: { margin: 0 } }, el('b', null, Neon.isImage(u) ? (E.textures[u.image] ? E.textures[u.image].name : 'Neon picture') : Neon.BY_KEY[u.design].name),
+      Neon.isFrameDesign(u.design) ? ' — built from glowing GUI frames, no upload needed.' : Neon.isImage(u) ? ' — full-colour picture (upload once). Pick others in the ' : ' — exported as an image (upload once).',
+      Neon.isImage(u) ? el('a', { href: '#', onclick: (e) => { e.preventDefault(); setLeftTab('nfs'); } }, 'NFS Neon tab') : null),
   ];
   if (u.design === 'text') {
     const t = el('input', { type: 'text', value: u.text, maxlength: 14 });
@@ -186,7 +197,7 @@ function renderNeonCard() {
     rows.push(field('Text', 'Shown along both sides of the car', t));
   }
   rows.push(
-    field('Colour', 'Neon colour (the design is tinted)', el('div', { class: 'row gap' }, color, swatches)),
+    field(Neon.isImage(u) ? 'Light colour' : 'Colour', Neon.isImage(u) ? 'Colour of the light on the road (and of the LED strips used until the picture is uploaded)' : 'Neon colour (the design is tinted)', el('div', { class: 'row gap' }, color, swatches)),
     field('Glow', 'SurfaceGui Brightness — above 1 blooms in-game', num('brightness', 0, 6, 0.1)),
     field('Opacity', '', num('opacity', 0.05, 1, 0.01)),
     field('Animation', 'Animated on each player\'s screen by a small client script', el('div', { class: 'row gap' }, anim)),
@@ -208,9 +219,14 @@ function renderNeonCard() {
     PLATE_SIZES.map(([n, sz]) => el('button', { class: 'btn small', title: sz.join(' × '), onclick: () => { E.partSize = [...sz]; commit(); refreshAll(); } }, n)))));
   if (!Neon.isFrameDesign(u.design)) {
     const id = el('input', { type: 'text', value: u.imageId, placeholder: 'rbxassetid://… after uploading', spellcheck: false });
-    id.addEventListener('change', () => set('imageId', parseAssetInput(id.value)));
+    id.addEventListener('change', () => {
+      const v = parseAssetInput(id.value);
+      const it = Neon.isImage(u) && NeonPack.items.find((x) => nfsKey(x) === u.image);
+      if (it) NeonPack.setAssetId(it.id, v).then(renderNfsTab); // remember the upload for next time
+      set('imageId', v);
+    });
     rows.push(el('div', { class: u.imageId ? 'ok-note' : 'warn' },
-      u.imageId ? 'Using your uploaded image.' : 'Image design: download the PNG, upload it to Roblox (Asset Manager › Import), then paste its ID. Until then it exports as glowing bars.',
+      u.imageId ? 'Using your uploaded image.' : Neon.isImage(u) ? 'Download the PNG, upload it to Roblox (Asset Manager › Import), then paste its ID. Until then it exports as LED strips in the light colour.' : 'Image design: download the PNG, upload it to Roblox (Asset Manager › Import), then paste its ID. Until then it exports as glowing bars.',
       el('div', { class: 'row gap', style: { marginTop: '6px' } }, id,
         el('button', { class: 'btn small', onclick: () => downloadNeonPng(u) }, '⬇ PNG'))));
   }
@@ -218,8 +234,9 @@ function renderNeonCard() {
 }
 
 function downloadNeonPng(u) {
-  const c = Neon.canvas(u.design, u.text, 2);
-  c.toBlob((b) => U.download(`particly_neon_${u.design}${u.design === 'text' ? '_' + U.safeName(u.text) : ''}.png`, b));
+  const c = Neon.plateCanvas(u, Neon.isImage(u) ? 1 : 2);
+  const name = Neon.isImage(u) ? U.safeName((App.effect.textures[u.image] || {}).name || 'picture') : u.design + (u.design === 'text' ? '_' + U.safeName(u.text) : '');
+  c.toBlob((b) => U.download(`particly_neon_${name}.png`, b));
 }
 
 /* ============================== texture thumbnails ============================== */
@@ -610,8 +627,9 @@ async function addUserTexture(file) {
 
 function setLeftTab(tab) {
   document.querySelectorAll('#leftTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-  ['presets', 'library', 'textures'].forEach((t) => $('tab-' + t).classList.toggle('hidden', t !== tab));
+  ['presets', 'library', 'textures', 'nfs'].forEach((t) => $('tab-' + t).classList.toggle('hidden', t !== tab));
   if (tab === 'library') renderLibrary();
+  if (tab === 'nfs') renderNfsTab();
   if (tab === 'textures') renderTextureTab();
 }
 
@@ -692,6 +710,82 @@ function renderLibrary() {
     el('button', { title: 'Duplicate', onclick: (e) => { e.stopPropagation(); const c = U.clone(item); c.effect.id = U.uid(); c.effect.name += ' copy'; App.library.splice(i + 1, 0, c); saveLibrary(); renderLibrary(); } }, '⧉'),
     el('button', { title: 'Delete', onclick: (e) => { e.stopPropagation(); if (confirm(`Delete "${item.effect.name}" from your library?`)) { App.library.splice(i, 1); saveLibrary(); renderLibrary(); } } }, '✕')),
   el('div', { class: 'label' }, item.effect.name))));
+}
+
+/* ------------------------------ NFS Neon tab ------------------------------ */
+
+let nfsQuery = '';
+function renderNfsTab() {
+  if ($('tab-nfs').classList.contains('hidden')) return;
+  const items = NeonPack.items;
+  const load = el('button', { class: 'btn small primary grow', onclick: () => { $('nfsFile').value = ''; $('nfsFile').click(); } }, items.length ? '+ Load more' : 'Load neon pack…');
+  if (!items.length) {
+    $('nfsBody').replaceChildren(
+      el('p', { class: 'hint' }, 'Need for Speed: World car neons — Brazil flag, cop lights, skulls, flames, hearts and the rest — as underglow for your Roblox cars.'),
+      el('ol', { class: 'hint', style: { paddingLeft: '18px' } },
+        el('li', null, 'Load your neon pack once: the ', el('b', null, 'Particly neon pack (.json)'), ', or ', el('code', null, 'NFSTEXTURES.bin'), ' from the World Neon mod (extract the .rar first — it is in Binary/Collections; also pick Binary/Strings/English.end for the in-game names). PNG pictures work too.'),
+        el('li', null, 'Click a neon to put it under the car.'),
+        el('li', null, 'Download its PNG, upload it to Roblox once and paste the ID — Particly remembers it.')),
+      el('div', { class: 'row gap' }, load),
+      el('p', { class: 'hint' }, 'The pictures stay on this computer; they are not part of Particly itself.'),
+    );
+    return;
+  }
+  const search = el('input', { class: 'search', placeholder: `Search ${items.length} neons…`, value: nfsQuery });
+  search.addEventListener('input', () => { nfsQuery = search.value; drawGrid(); });
+  const grid = el('div', { class: 'nfs-grid' });
+  const cur = App.effect.underglow;
+  const drawGrid = () => {
+    const q = nfsQuery.trim().toLowerCase();
+    grid.replaceChildren(...items.filter((it) => !q || it.name.toLowerCase().includes(q) || it.id.toLowerCase().includes(q)).map((it) => el('button', {
+      class: 'nfs-tile' + (cur.enabled && Neon.isImage(cur) && cur.image === nfsKey(it) ? ' sel' : ''), title: it.id + (it.assetId ? ' — uploaded: ' + it.assetId : ' — not uploaded yet'),
+      onclick: () => applyNeonPicture(it),
+    }, el('div', { class: 'pic', style: { backgroundImage: `url(${it.data})` } }), el('div', { class: 'nm' }, el('span', null, it.name), it.assetId ? el('i', null, '✓') : null))));
+  };
+  drawGrid();
+  $('nfsBody').replaceChildren(
+    el('p', { class: 'hint' }, 'Click a neon to put it under the car. ', el('b', null, '✓'), ' = uploaded to Roblox (ID remembered).'),
+    search, grid,
+    el('div', { class: 'row gap wrap', style: { marginTop: '8px' } }, load,
+      el('button', { class: 'btn small grow', title: 'Save the pack (with your Roblox IDs) as one file, e.g. for another computer', onclick: () => U.download('particly-neon-pack.json', NeonPack.exportJson(), 'application/json') }, '⬇ Pack file'),
+      el('button', { class: 'btn small', title: 'Remove the pack from this computer', onclick: async () => { if (confirm('Remove all neon pictures from this computer?')) { await NeonPack.clear(); renderNfsTab(); } } }, 'Remove')),
+  );
+}
+const nfsKey = (it) => 'neon_' + it.id;
+
+/** Put a neon picture under the car: keeps the current neon effect, or starts a fresh one. */
+async function applyNeonPicture(it) {
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = it.data; });
+  const colour = Neon.averageColour(img);
+  const key = nfsKey(it);
+  const E = App.effect;
+  if (E.underglow.enabled) {
+    for (const k of Object.keys(E.textures)) if (k.startsWith('neon_') && k !== key && E.underglow.image === k) delete E.textures[k];
+    E.textures[key] = { name: it.name, data: it.data };
+    TextureStore.addUser(key, it.name, it.data);
+    Object.assign(E.underglow, { design: 'image', image: key, color: colour, imageId: it.assetId || '' });
+    E.name = 'NFS Neon ' + it.name;
+    commit(); refreshAll();
+  } else {
+    const hex = U.rgbToHex(colour);
+    loadEffect({
+      name: 'NFS Neon ' + it.name, partSize: [...CAR_PLATE], trigger: { ...NEON_TOGGLE, shop: 'none' },
+      textures: { [key]: { name: it.name, data: it.data } },
+      underglow: { enabled: true, design: 'image', image: key, color: colour, imageId: it.assetId || '', brightness: 2, opacity: 1, light: true, lightBrightness: 3, lightRange: 10 },
+      layers: [haze(hex)],
+    });
+  }
+  renderNfsTab();
+  U.toast(`${it.name} neon${it.assetId ? '' : ' — upload its PNG to use it in Roblox (Car Neon panel)'}`);
+}
+
+async function loadNeonFiles(files) {
+  try {
+    const n = await NeonPack.importFiles([...files]);
+    U.toast(n ? `Loaded ${n} neon picture${n > 1 ? 's' : ''}` : 'No neon pictures found in that file', n ? 'ok' : 'err');
+    setLeftTab('nfs');
+    return n > 0;
+  } catch (e) { U.toast(e.message || String(e), 'err', 7000); return false; }
 }
 
 /* ------------------------------ textures tab ------------------------------ */
@@ -883,6 +977,8 @@ function importEffects(effects, label) {
 
 async function importFile(file) {
   try {
+    if (/\.(bin|tpk|end)$/i.test(file.name)) return loadNeonFiles([file]);
+    if (/\.json$/i.test(file.name) && /"type"\s*:\s*"neonpack"/.test(await file.slice(0, 200).text())) return loadNeonFiles([file]);
     if (/^image\//.test(file.type)) {
       const key = await addUserTexture(file);
       applyTexture(current(), key);
@@ -969,6 +1065,7 @@ function openHelp() {
       el('li', null, el('b', null, 'Controlled by my scripts'), ': require(part.ParticlyControl).play(2) / .start() / .stop() / .burst().')),
     el('h4', null, 'Car neon (underglow)'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Effect › Car Neon: glowing designs under a car (LED strips, hearts, flames, skulls, custom text…). The effect Part becomes the plate — size X = car width, Z = car length — with a glowing SurfaceGui on top and a light on the road. Bars / LED / ring designs need no upload. Animations include chasing LEDs, a scanner sweep and two-colour police flashes.'),
+    el('p', { class: 'hint', style: { margin: 0 } }, 'NFS Neon tab: load your NFS World neon pack (NFSTEXTURES.bin from the World Neon mod, or a Particly neon pack) and click any neon — Brazil flag, cop lights, skulls… — to put it under the car.'),
     el('h4', null, 'Colour shop'),
     el('p', { class: 'hint', style: { margin: 0 } }, 'Set Effect › In Roblox › Colour shop on neon, nitro, tyre smoke or aura effects, then add the shop from Export › Colour shop. Players get a colour picker; their choice is saved and applied to the car they drive.'),
     el('h4', null, 'Textures'),
@@ -1201,8 +1298,10 @@ async function boot() {
     if (window.particlyDesktop && window.particlyDesktop.webglFailed) window.particlyDesktop.webglFailed();
     $('center').replaceChildren(el('div', { class: 'empty', style: { padding: '40px' } }, 'Particly needs WebGL2 for the live preview. Please use a recent Chrome, Edge, Firefox or Safari. (', String(e.message || e), ')'));
   }
-  TextureStore.onChange = () => { renderLayers(); };
+  TextureStore.onChange = () => { renderLayers(); renderNeonCard(); };
 
+  NeonPack.load().then(() => renderNfsTab());
+  $('nfsFile').addEventListener('change', (e) => loadNeonFiles(e.target.files));
   bindTopBar();
   $('presetSearch').placeholder = `Search ${PRESET_EFFECTS.length} effects…`;
   buildAddFromPreset();

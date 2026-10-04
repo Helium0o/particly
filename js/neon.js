@@ -23,6 +23,7 @@ const NEON_TWO_COLOUR = ['police', 'duo'];
 const NEON_DEFAULTS = {
   enabled: false, design: 'led', text: 'TURBO', color: [0.25, 0.6, 1], color2: [1, 0.1, 0.15], brightness: 2, opacity: 1,
   anim: 'none', animSpeed: 1, light: true, lightBrightness: 3, lightRange: 10, imageId: '',
+  image: '', // design 'image': key of a full-colour neon picture in effect.textures (NFS Neon tab)
 };
 
 const Neon = (() => {
@@ -201,6 +202,7 @@ const Neon = (() => {
     { key: 'bubbles', name: 'Bubbles', emblem: 'bubbles' },
     { key: 'paws', name: 'Paw Prints', emblem: 'paw' },
     { key: 'text', name: 'Custom Text', text: true },
+    { key: 'image', name: 'Neon picture (NFS Neon tab)', image: true },
   ];
   const BY_KEY = Object.fromEntries(DESIGNS.map((d) => [d.key, d]));
 
@@ -224,6 +226,7 @@ const Neon = (() => {
       lightBrightness: num(u.lightBrightness, d.lightBrightness, 0, 40),
       lightRange: num(u.lightRange, d.lightRange, 0, 60),
       imageId: String(u.imageId || '').trim(),
+      image: String(u.image || '').slice(0, 120),
     };
   }
 
@@ -281,6 +284,43 @@ const Neon = (() => {
     }
   }
 
+  /* ---------------- full-colour neon pictures (NFS World style, landscape 2:1) ---------------- */
+  // Pictures are landscape (x = car length); the plate is portrait (x = car width), so turn them 90°.
+  const isImage = (u) => u.design === 'image';
+  const imgCache = {};
+  function imageCanvas(key, scale = 1) {
+    const k = key + '|' + scale;
+    if (imgCache[k]) return imgCache[k];
+    const c = document.createElement('canvas');
+    c.width = NEON_W * scale; c.height = NEON_H * scale;
+    const src = key && typeof TextureStore !== 'undefined' ? TextureStore.source(key) : null;
+    if (!src) return c; // not loaded yet: blank (not cached)
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.translate(c.width, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(src, 0, 0, c.height, c.width);
+    return (imgCache[k] = c);
+  }
+  /** Average glow colour of a picture (bright, opaque pixels count most): road light + fallback colour. */
+  function averageColour(src) {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 32;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(src, 0, 0, 64, 32);
+    const d = ctx.getImageData(0, 0, 64, 32).data;
+    let r = 0, g = 0, b = 0, w = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i + 3] / 255, l = Math.max(d[i], d[i + 1], d[i + 2]) / 255, k = a * l * l;
+      r += d[i] * k; g += d[i + 1] * k; b += d[i + 2] * k; w += k;
+    }
+    if (!w) return [1, 1, 1];
+    const col = [r / w / 255, g / w / 255, b / w / 255], m = Math.max(...col) || 1;
+    return col.map((v) => U.clamp(v / m, 0, 1)); // full brightness, keep the hue
+  }
+  /** Canvas for the plate: the picture for image designs, the white mask otherwise. */
+  const plateCanvas = (u, scale = 1) => (isImage(u) ? imageCanvas(u.image, scale) : canvas(u.design, u.text, scale));
+
   const cache = {};
   /** White-mask canvas for a design (portrait NEON_W x NEON_H, or scaled). */
   function canvas(design, text = '', scale = 1) {
@@ -293,10 +333,11 @@ const Neon = (() => {
     return c;
   }
   /** Soft blurred copy used for the light spill on the ground in the preview. */
-  function spill(design, text = '') {
-    const k = `spill|${design}|${text}`;
+  function spill(design, text = '', image = '') {
+    const k = `spill|${design}|${text}|${design === 'image' ? image : ''}`;
     if (cache[k]) return cache[k];
-    const src = canvas(design, text);
+    if (design === 'image' && !imgCache[image + '|1']) return imageCanvas(image); // blank until loaded
+    const src = design === 'image' ? imageCanvas(image) : canvas(design, text);
     const c = document.createElement('canvas');
     c.width = 128; c.height = 256;
     const ctx = c.getContext('2d');
@@ -504,5 +545,5 @@ animateNeon(gui, script.Parent:FindFirstChild("ParticlyNeonLight"), ANIM, SPEED,
 `;
   }
 
-  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN, state, lightState, isPattern, animCanvas };
+  return { DESIGNS, BY_KEY, normalize, rects, isFrameDesign, needsUpload, canvas, spill, guiFrames, fxSource, ANIMATE_FN, state, lightState, isPattern, animCanvas, isImage, imageCanvas, plateCanvas, averageColour };
 })();

@@ -477,16 +477,18 @@ class ParticleView {
       const L = Neon.lightState(u.anim, s, u.color, u.color2);
       const spillA = U.clamp(0.25 * L.k * u.lightBrightness / 3, 0, 0.8);
       this._quad(B, 0, [p[0], 0.02, p[2]], hx * 1.6 + 1, hz * 1.35 + 1, null, L.col, spillA);
-      gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text, Neon.spill(u.design, u.text)));
+      gl.bindTexture(gl.TEXTURE_2D, this._canvasTexture('neonspill|' + u.design + '|' + u.text + '|' + u.image, Neon.spill(u.design, u.text, u.image)));
       gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     const glow = Math.max(0.2, u.brightness / 2);
     // Chase / scanner / police light each piece separately: draw a freshly coloured canvas
-    const rgb = pattern ? [glow, glow, glow] : col.map((v) => v * glow);
+    // Full-colour pictures keep their own colours unless an animation recolours them
+    const tinted = !Neon.isImage(u) || ['rainbow', 'duo', 'police'].includes(u.anim);
+    const rgb = pattern || !tinted ? [glow, glow, glow] : col.map((v) => v * glow);
     this._quad(B, 0, [p[0], p[1] + E.partSize[1] / 2 + 0.01, p[2]], hx, hz, null, rgb, U.clamp(u.opacity * (pattern ? 1 : k), 0, 1));
     gl.bindTexture(gl.TEXTURE_2D, pattern ? this._canvasTexture('neonanim', Neon.animCanvas(u, s), true)
-      : this._canvasTexture('neon|' + u.design + '|' + u.text, Neon.canvas(u.design, u.text)));
+      : this._canvasTexture('neon|' + u.design + '|' + u.text + '|' + u.image, Neon.plateCanvas(u)));
     gl.bufferData(gl.ARRAY_BUFFER, B, gl.STREAM_DRAW);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }

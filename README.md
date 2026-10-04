@@ -91,6 +91,20 @@ Tick **Car Neon → On** in the Effect panel, or pick a preset from **Car Neon**
 - **Switching it on and off:** to let the driver toggle the neon with a key, set *In Roblox* to **Vehicle boost** and tick **Toggle**, as in the "Neon Toggle (press N)" preset.
 - **Not just cars:** the *Single Strip* and *Dashed Line* designs make neon road edges and tunnel light strips (see **Track & World**).
 
+### NFS World neons (NFS Neon tab)
+
+The **NFS Neon** tab puts the actual Need for Speed: World car neons (Brazil flag, cop lights, muscle skulls, flames, hearts, eggs and the rest) under your Roblox cars. Particly doesn't ship these pictures. You load your own copy once and it stays on your computer.
+
+1. Load the pack with **NFS Neon › Load neon pack…**. Either:
+   - choose a Particly neon pack (`.json`), or
+   - extract the World Neon mod's `.rar` and choose `Binary/Collections/NFSTEXTURES.bin`. Also choose `Binary/Strings/English.end` to get the in-game names.
+
+   PNG pictures of your own work too.
+2. Click a neon to put it under the car. It uses the same plate, road light, animations and *In Roblox* settings as the other car neons.
+3. Download its PNG from the **Car Neon** panel, upload it to Roblox once and paste the asset ID. Particly remembers the ID for that neon, and the tab marks it with ✓.
+
+Until a neon is uploaded, it exports as LED strips in the picture's main colour. Pictures are exported untinted, and the colour shop leaves them as they are.
+
 ### Speed, drift and crash effects
 
 - **Speed effects** (*Speed FX*, *Wheels & Tyres*) switch on above the **Starts at** speed and reach full strength at the **Full at** speed. Speeds are in studs per second, and a typical Roblox car does 50–150. They get more particles and, optionally, bigger ones. Set **Reacts to** to *Sideways slide (drift)* for drift smoke and skid marks.
@@ -166,6 +180,7 @@ js/presets*.js      the 270 presets (vehicles, neon, race = cars; packs = water 
 js/behaviours.js    "In Roblox" behaviours: generates ParticlyControl + trigger scripts
 js/neon.js          car neon designs, animations + SurfaceGui/SurfaceLight export helpers
 js/shop.js          in-game colour shop (server + client scripts)
+js/neonpack.js      NFS Neon tab: loads neon picture packs (NFSTEXTURES.bin / .json / PNG)
 js/renderer.js      particle simulation + WebGL2 preview
 js/exporters.js     .rbxmx / Command Bar / ModuleScript / JSON / share links
 js/importers.js     JSON / .rbxmx / Luau parser / URLs

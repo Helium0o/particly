@@ -91,7 +91,7 @@ local function recolour(item: Instance, color: Color3)
 				child.BackgroundColor3 = color
 			elseif child:IsA("UIStroke") then
 				child.Color = color
-			elseif child:IsA("ImageLabel") then
+			elseif child:IsA("ImageLabel") and not child:GetAttribute("ParticlyFullColour") then
 				child.ImageColor3 = color
 			end
 		end

@@ -24,7 +24,8 @@ const Export = (() => {
     }
     const u = effect.underglow;
     if (u && u.enabled) {
-      if (Neon.needsUpload(u)) out.push(`Car neon design "${Neon.BY_KEY[u.design].name}" is an image: download its PNG (Car Neon panel), upload it to Roblox and paste the rbxassetid. Until then it exports as glowing bars.`);
+      if (Neon.needsUpload(u) && Neon.isImage(u)) out.push('The neon picture needs a one-time upload: download its PNG (Car Neon panel or NFS Neon tab), upload it to Roblox and paste the rbxassetid. Until then it exports as LED strips in the picture\'s colour.');
+      else if (Neon.needsUpload(u)) out.push(`Car neon design "${Neon.BY_KEY[u.design].name}" is an image: download its PNG (Car Neon panel), upload it to Roblox and paste the rbxassetid. Until then it exports as glowing bars.`);
       if (effect.trigger.mode === 'character') out.push('Car neon is not included for "Attach to every character" effects.');
     }
     const hidden = effect.layers.filter((l) => l.hidden).length;
@@ -104,7 +105,9 @@ const Export = (() => {
   const xUDim2 = (name, xs, xo, ys, yo) => `<UDim2 name="${name}"><XS>${f(xs)}</XS><XO>${f(xo)}</XO><YS>${f(ys)}</YS><YO>${f(yo)}</YO></UDim2>`;
   const item = (cls, ind, props, kids = []) => `${ind}<Item class="${cls}" referent="${ref()}">\n${ind}\t<Properties>\n${props.filter(Boolean).map((p) => ind + '\t\t' + p).join('\n')}\n${ind}\t</Properties>${kids.length ? '\n' + kids.join('\n') : ''}\n${ind}</Item>`;
   /** Neon image or Frames: frame designs need no upload; icon designs fall back to bars until uploaded. */
-  const neonFrames = (u) => Neon.guiFrames(u.imageId || Neon.isFrameDesign(u.design) ? u : { ...u, design: 'bars' });
+  const neonFrames = (u) => Neon.guiFrames(u.imageId || Neon.isFrameDesign(u.design) ? u : { ...u, design: Neon.isImage(u) ? 'led' : 'bars' });
+  /** Full-colour neon pictures are not tinted. */
+  const imageTint = (u) => (Neon.isImage(u) ? [1, 1, 1] : u.color);
 
   function neonXml(effect, ind, on) {
     const u = effect.underglow;
@@ -113,8 +116,9 @@ const Export = (() => {
     if (u.imageId) {
       kids.push(item('ImageLabel', ind + '\t', [
         `<string name="Name">Design</string>`, `<float name="BackgroundTransparency">1</float>`,
-        `<Content name="Image"><url>${esc(u.imageId)}</url></Content>`, xColor('ImageColor3', u.color),
+        `<Content name="Image"><url>${esc(u.imageId)}</url></Content>`, xColor('ImageColor3', imageTint(u)),
         `<float name="ImageTransparency">${f(1 - u.opacity)}</float>`, xUDim2('Size', 1, 0, 1, 0),
+        Neon.isImage(u) ? `<BinaryString name="AttributesSerialize">${attributesBlob({ ParticlyFullColour: 1 })}</BinaryString>` : null,
       ]));
     } else {
       neonFrames(u).forEach((fr, i) => {
@@ -283,6 +287,8 @@ end`;
 local NEON = {
 	Image = ${u.imageId ? lStr(u.imageId) : 'nil'},
 	Color = ${lCol(u.color)},
+	ImageTint = ${lCol(imageTint(u))}, -- colour multiplied into an uploaded neon picture
+	FullColour = ${Neon.isImage(u) ? 'true' : 'false'}, -- a full-colour picture: the colour shop leaves it as it is
 	Color2 = ${lCol(u.color2)}, -- second colour (police / two-colour fade)
 	Brightness = ${f(u.brightness)},
 	Opacity = ${f(u.opacity)},
@@ -313,9 +319,12 @@ ${rows}
 		image.Name = "Design"
 		image.BackgroundTransparency = 1
 		image.Image = NEON.Image
-		image.ImageColor3 = NEON.Color
+		image.ImageColor3 = NEON.ImageTint
 		image.ImageTransparency = 1 - NEON.Opacity
 		image.Size = UDim2.fromScale(1, 1)
+		if NEON.FullColour then
+			image:SetAttribute("ParticlyFullColour", 1)
+		end
 		image.Parent = gui
 	end
 	for i, def in ipairs(NEON.Frames) do

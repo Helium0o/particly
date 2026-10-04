@@ -269,3 +269,12 @@ select.vb { font-size: 13px; background: transparent; border-color: var(--line2)
   .tab-body { max-height: none; }
   #viewHint { display: none; }
 }
+
+/* NFS Neon tab: landscape neon pictures */
+.nfs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.nfs-tile { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel2, #12141b); cursor: pointer; color: var(--text); font-size: 11px; text-align: left; }
+.nfs-tile:hover { border-color: var(--accent); }
+.nfs-tile.sel { border-color: var(--accent2); box-shadow: 0 0 0 1px var(--accent2); }
+.nfs-tile .pic { aspect-ratio: 2 / 1; border-radius: 4px; background: #000 center/contain no-repeat; }
+.nfs-tile .nm { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nfs-tile .nm i { font-style: normal; color: var(--ok); }
