@@ -1,0 +1,89 @@
+{
+  "name": "particly",
+  "productName": "Particly",
+  "version": "1.2.0",
+  "description": "Roblox particle effect studio \u2014 design ParticleEmitters and export them to Roblox Studio.",
+  "main": "desktop/main.js",
+  "author": "Particly",
+  "homepage": "https://github.com/Helium0o/particly",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:web": "node tools/build.mjs",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:linux": "electron-builder --linux --publish never",
+    "test": "node tests/run-all.cjs",
+    "test:export": "node tests/export-luau.cjs",
+    "test:luau": "node tests/run-luau.cjs",
+    "test:roundtrip": "node tests/roundtrip.cjs",
+    "test:ui": "node tests/ui.cjs"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.particly.studio",
+    "productName": "Particly",
+    "icon": "desktop/icon.png",
+    "files": [
+      "index.html",
+      "css/**",
+      "js/**",
+      "desktop/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "Particly-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Particly-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "artifactName": "Particly-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "artifactName": "Particly-${version}.${ext}",
+      "syncDesktopName": true
+    }
+  },
+  "desktopName": "particly.desktop"
+}
